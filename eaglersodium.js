@@ -67,16 +67,37 @@
     return frozenDPR;
   }
 
+  // The game does its own layout maths with devicePixelRatio while it boots,
+  // and lying to it that early leaves the canvas mis-sized (it ends up in a
+  // corner of the window). So the hook stays dormant until the game's canvas
+  // is up, then arms itself. Injected as a bookmarklet the wait is over
+  // immediately; baked into the page it costs the first second of loading.
+  var armed = false;
+
   try {
     Object.defineProperty(window, 'devicePixelRatio', {
       configurable: true,
       get: function () {
-        return Math.max(0.05, realDPR() * cfg.renderScale);
+        return armed ? Math.max(0.05, realDPR() * cfg.renderScale) : realDPR();
       }
     });
   } catch (e) {
     console.warn('[EaglerSodium] could not hook devicePixelRatio', e);
   }
+
+  function arm() {
+    if (armed) return;
+    armed = true;
+    refreshScale();
+  }
+
+  // wait for the game canvas, then give the runtime a moment to settle
+  var armTries = 0;
+  (function waitForCanvas() {
+    var c = findCanvas();
+    if (c && c.clientWidth > 0) { setTimeout(arm, 400); return; }
+    if (armTries++ < 2400) setTimeout(waitForCanvas, 150);
+  })();
 
   // Poke the game so it re-reads the screen size and resizes its canvas.
   function refreshScale() {
@@ -227,6 +248,20 @@
     });
   }
 
+  // Write a minimal options file so a fresh profile boots tuned. The key name
+  // is this client's ("_eaglymc.g"); if a future build renames it, applyPreset
+  // still catches the real file on the next launch.
+  function seedOptions() {
+    if (optionsKey()) return;
+    var over = PRESETS[cfg.preset] || {};
+    var lines = [];
+    for (var k in over) lines.push(k + ':' + over[k]);
+    if (!lines.length) return;
+    gzip(lines.join('\n') + '\n').then(function (b64) {
+      if (!optionsKey()) localStorage.setItem('_eaglymc.g', b64);
+    }).catch(function () {});
+  }
+
   /* ------------------------------------------------------------------ *
    * 3. panel UI
    * ------------------------------------------------------------------ */
@@ -322,6 +357,7 @@
   $('#rs').addEventListener('input', function () {
     cfg.renderScale = Math.max(0.25, Math.min(1, this.value / 100));
     saveCfg();
+    arm();
     refreshScale();
   });
 
@@ -398,14 +434,20 @@
 
   // First ever run (or a newer preset): tune the game settings automatically.
   if (cfg.applied < PRESET_VERSION && cfg.preset !== 'off') {
-    var tries = 0;
+    // On a brand new browser profile the game has not written its options file
+    // yet. Wait a few seconds for it; if it still isn't there, seed one so even
+    // the first run boots tuned (the game fills in every key we leave out).
+    var waited = 0;
+    var seeded = false;
     (function tryPreset() {
-      // On a brand new browser there is no settings file until the game has
-      // saved one, so retry for a couple of minutes.
-      if (!optionsKey() && tries++ < 40) { setTimeout(tryPreset, 3000); return; }
+      if (!optionsKey()) {
+        waited += 1;
+        if (!seeded && waited > 4) { seeded = true; seedOptions(); }
+        if (waited < 45) { setTimeout(tryPreset, 1200); return; }
+        return;                              // gave up; the panel button works
+      }
       applyPreset(cfg.preset).then(function (r) {
         console.log('[EaglerSodium] fast settings: ' + r);
-        if (r === 'ok' && tries > 0) msg('Fast settings saved - restart the game to use them.');
       });
     })();
   }
@@ -414,7 +456,7 @@
 
   window.__EAGLER_SODIUM__ = {
     version: VERSION, cfg: cfg, toggle: toggle, applyPreset: applyPreset,
-    setScale: function (s) { cfg.renderScale = s; saveCfg(); refreshScale(); }
+    setScale: function (s) { cfg.renderScale = s; saveCfg(); arm(); refreshScale(); }
   };
   console.log('%c[EaglerSodium] ' + VERSION + ' loaded - Ctrl+Shift+P for the panel',
               'color:#7ee787');
