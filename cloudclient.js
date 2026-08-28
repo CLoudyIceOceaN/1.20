@@ -1,5 +1,5 @@
 /*!
- * CloudClient 1.0.1 - a mod client for EaglercraftX in the browser
+ * CloudClient 1.0.2 - a mod client for EaglercraftX in the browser
  * Built for a laggy school Chromebook. github.com/CLoudyIceOceaN/1.20
  *
  * The game itself is one compiled WASM blob with no mod loader, so nothing can
@@ -20,7 +20,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '1.0.1';
+  var VERSION = '1.0.2';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -159,7 +159,7 @@
     }).then(function (b64) {
       localStorage.setItem(key || '_eaglymc.g', b64);
       needsReload = true;
-      refreshMenu();
+      refreshStat();
       return true;
     }).catch(function (err) { console.warn('[CloudClient] options write failed', err); return false; });
   }
@@ -300,13 +300,15 @@
     cfg.mods[id].on = on; saveCfg();
     var mod = modById(id);
     if (mod) { applyMod(mod); if (mod.reload) needsReload = true; }
-    refreshMenu();
+    renderMenu();
   }
-  function setSetting(id, key, value) {
+  /** redraw = false while dragging a slider, so the control isn't replaced
+   *  underneath the pointer mid-drag. */
+  function setSetting(id, key, value, redraw) {
     cfg.mods[id].s[key] = value; saveCfg();
     var mod = modById(id);
     if (mod) { applyMod(mod); if (mod.reload) needsReload = true; }
-    refreshMenu();
+    if (redraw === false) refreshStat(); else renderMenu();
   }
 
   /* =================================================================== *
@@ -631,14 +633,14 @@
   function $(sel) { return root.querySelector(sel); }
 
   var panel = $('#panel'), hudEl = $('#hud'), markEl = $('.mark');
-  var open = false, tab = 'perf';
+  var open = false, tab = 'perf', view = 'list';
 
   function toggle(force) {
     open = force === undefined ? !open : force;
     panel.classList.toggle('on', open);
     if (open) {
       if (document.exitPointerLock) { try { document.exitPointerLock(); } catch (e) {} }
-      refreshMenu();
+      renderMenu();
     }
   }
 
@@ -650,14 +652,21 @@
     });
   }
 
-  function refreshMenu() {
+  /** Cheap: header numbers only. Safe to run on a timer - it never replaces
+   *  controls the player is in the middle of using. */
+  function refreshStat() {
     if (!open) return;
-
     var c = findCanvas();
     $('#stat').textContent = c
       ? ('drawing ' + c.width + '×' + c.height + ' → screen ' + c.clientWidth + '×' + c.clientHeight)
       : 'waiting for the game…';
     $('#reload').style.display = needsReload ? 'block' : 'none';
+  }
+
+  /** Full redraw. Only on a real change - a tab switch, a toggle, an edit. */
+  function renderMenu() {
+    if (!open) return;
+    refreshStat();
 
     var tabs = $('#tabs');
     tabs.innerHTML = '';
@@ -665,9 +674,11 @@
       var b = document.createElement('button');
       b.className = 'tab' + (tab === k ? ' sel' : '');
       b.textContent = CATS[k];
-      b.onclick = function () { tab = k; refreshMenu(); };
+      b.onclick = function () { tab = k; view = 'list'; renderMenu(); };
       tabs.appendChild(b);
     });
+
+    if (view === 'editor') return;      // the editor owns the body; leave it be
 
     var body = $('#body');
     body.innerHTML = '';
@@ -737,7 +748,12 @@
       var r = document.createElement('input');
       r.type = 'range'; r.min = def.min; r.max = def.max; r.step = def.step; r.value = value;
       if (def.id === 'distance') r.min = 0;
-      r.oninput = function () { setSetting(m.id, def.id, Number(r.value)); };
+      r.oninput = function () {
+        var v = Number(r.value);
+        label.innerHTML = esc(def.label) + ': <b>' +
+          (def.id === 'distance' && !v ? 'preset' : esc(v) + esc(def.unit || '')) + '</b>';
+        setSetting(m.id, def.id, v, false);
+      };
       wrap.appendChild(r);
     } else if (def.type === 'select') {
       var sel = document.createElement('select');
@@ -795,7 +811,7 @@
       var del = document.createElement('button');
       del.className = 'mini'; del.textContent = 'Delete';
       del.onclick = function () {
-        userMods.splice(i, 1); saveUserMods(); needsReload = true; refreshMenu();
+        userMods.splice(i, 1); saveUserMods(); needsReload = true; renderMenu();
       };
       row.appendChild(del);
 
@@ -805,7 +821,7 @@
       sw.onclick = function () {
         m.on = !m.on; saveUserMods(); needsReload = true;
         if (m.on) runUserMod(m);
-        refreshMenu();
+        renderMenu();
       };
       row.appendChild(sw);
       box.appendChild(row);
@@ -821,6 +837,7 @@
   }
 
   function showEditor(index) {
+    view = 'editor';
     var editing = index != null ? userMods[index] : { name: '', code: '', on: true };
     var body = $('#body');
     body.innerHTML = '';
@@ -846,7 +863,8 @@
       saveUserMods();
       needsReload = true;
       tab = 'user';
-      refreshMenu();
+      view = 'list';
+      renderMenu();
     };
     row.appendChild(saveBtn);
 
@@ -869,7 +887,7 @@
 
     var cancel = document.createElement('button');
     cancel.className = 'mini'; cancel.textContent = 'Cancel';
-    cancel.onclick = function () { tab = 'user'; refreshMenu(); };
+    cancel.onclick = function () { tab = 'user'; view = 'list'; renderMenu(); };
     row.appendChild(cancel);
 
     body.appendChild(row);
@@ -887,7 +905,7 @@
     setMod('noanim', true);
     setMod('fpslimit', true);
     needsReload = true;
-    refreshMenu();
+    renderMenu();
   };
   $('#reset').onclick = function () {
     cfg = { mods: {} };
@@ -895,7 +913,8 @@
     saveCfg();
     mods.forEach(applyMod);
     needsReload = true;
-    refreshMenu();
+    view = 'list';
+    renderMenu();
   };
 
   window.addEventListener('keydown', function (e) {
@@ -916,7 +935,7 @@
         var c = findCanvas();
         hudEl.innerHTML = fps + ' fps' + (c ? '<br>' + c.width + '×' + c.height : '');
       }
-      if (open) refreshMenu();
+      if (open) refreshStat();
     }
     for (var i = 0; i < frameHooks.length; i++) {
       try { frameHooks[i](fps); } catch (e) { frameHooks.splice(i--, 1); }
@@ -970,7 +989,7 @@
     toggle: toggle,
     mods: mods,
     api: api,
-    register: function (m) { register(m); applyMod(m); refreshMenu(); },
+    register: function (m) { register(m); applyMod(m); renderMenu(); },
     get fps() { return fps; }
   };
 
