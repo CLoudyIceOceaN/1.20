@@ -1,5 +1,5 @@
 /*!
- * CloudClient 1.0.2 - a mod client for EaglercraftX in the browser
+ * CloudClient 1.0.3 - a mod client for EaglercraftX in the browser
  * Built for a laggy school Chromebook. github.com/CLoudyIceOceaN/1.20
  *
  * The game itself is one compiled WASM blob with no mod loader, so nothing can
@@ -20,7 +20,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '1.0.2';
+  var VERSION = '1.0.3';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -519,8 +519,9 @@
     onFrame: function (fn) { frameHooks.push(fn); },
     overlay: function (html) {
       var box = document.createElement('div');
-      box.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147483646;' +
-        'font:12px system-ui,sans-serif;color:#cbd5e1;text-shadow:0 1px 2px #000;pointer-events:none';
+      box.style.cssText = 'position:fixed;left:8px;bottom:' + (26 + overlayCount++ * 18) + 'px;' +
+        'z-index:2147483646;font:12px system-ui,sans-serif;color:#cbd5e1;' +
+        'text-shadow:0 1px 2px #000;pointer-events:none';
       box.innerHTML = html;
       root.appendChild(box);
       return box;
@@ -528,6 +529,7 @@
   };
 
   var frameHooks = [];
+  var overlayCount = 0;   // so two user overlays don't sit on top of each other
 
   function runUserMod(m) {
     if (!m.on) return;
@@ -558,7 +560,7 @@
     '.btn:hover{background:rgba(13,17,23,.96)}',
     '.mark{position:fixed;left:8px;bottom:6px;font:600 12px system-ui,sans-serif;color:#7dd3fc;',
     '  text-shadow:0 1px 3px #000;pointer-events:none;letter-spacing:.3px}',
-    '.hud{position:fixed;left:8px;top:6px;font:600 12px/1.5 ui-monospace,monospace;color:#7dd3fc;',
+    '.hud{position:fixed;right:8px;top:6px;text-align:right;font:600 12px/1.5 ui-monospace,monospace;color:#7dd3fc;',
     '  text-shadow:0 1px 3px #000;pointer-events:none;display:none}',
     '.panel{position:fixed;right:8px;bottom:52px;width:330px;max-height:calc(100vh - 62px);',
     '  display:none;flex-direction:column;border-radius:14px;overflow:hidden;',
