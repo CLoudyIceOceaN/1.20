@@ -1,52 +1,46 @@
 /*!
- * CloudClient 1.0.3 - a mod client for EaglercraftX in the browser
- * Built for a laggy school Chromebook. github.com/CLoudyIceOceaN/1.20
+ * CloudClient 2.0 - a mod client for EaglercraftX in the browser
+ * github.com/CLoudyIceOceaN/1.20
  *
- * The game itself is one compiled WASM blob with no mod loader, so nothing can
- * be patched inside it. Everything here works from outside, through the four
- * doors the client actually leaves open:
+ * The game is one compiled WASM blob with no mod loader inside it, so every
+ * mod here works from OUTSIDE, through the doors the client leaves open:
+ *   devicePixelRatio (render scale), the options blob in localStorage,
+ *   the resource-pack filesystem in IndexedDB, keyboard/page events,
+ *   and the page around the canvas.
  *
- *   1. window.devicePixelRatio  -> how many pixels the game draws (render scale)
- *   2. localStorage "_eaglymc.g" -> the game's own video/HUD options
- *   3. IndexedDB resourcePacks   -> installing + selecting resource packs
- *   4. the page around the canvas -> overlays, wake lock, page title
- *
- * Mods are registered against that API, toggled from the menu on the little
- * button in the bottom-right corner, and remembered between launches. You can
- * add your own from the same menu.
+ * 2.0 adds: a designed homescreen with a Mods button, a mod store with
+ * install animations, and a tighter corner panel. Installed store mods
+ * appear in the panel next to the built-ins.
  */
 (function () {
   'use strict';
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '1.0.3';
+  var VERSION = '2.0.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
 
-  /* =================================================================== *
-   * storage
-   * =================================================================== */
+  /* ============================== storage ============================== */
 
-  function load(key, fallback) {
-    try { var v = JSON.parse(localStorage.getItem(key)); return v == null ? fallback : v; }
-    catch (e) { return fallback; }
+  function load(key, fb) {
+    try { var v = JSON.parse(localStorage.getItem(key)); return v == null ? fb : v; }
+    catch (e) { return fb; }
   }
   function store(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {} }
 
   var cfg = load(CFG_KEY, {});
-  if (!cfg.mods) cfg.mods = {};          // id -> { on: bool, s: {settingId: value} }
+  if (!cfg.mods) cfg.mods = {};            // id -> {on, s:{}}
+  if (!cfg.installed) cfg.installed = {};  // storeId -> true
   function saveCfg() { store(CFG_KEY, cfg); }
 
-  var userMods = load(MODS_KEY, []);     // [{ id, name, code, on }]
+  var userMods = load(MODS_KEY, []);
   function saveUserMods() { store(MODS_KEY, userMods); }
 
   var needsReload = false;
 
-  /* =================================================================== *
-   * the game, as seen from outside
-   * =================================================================== */
+  /* ===================== the game, from outside ======================== */
 
   function findCanvas(root) {
     root = root || document;
@@ -58,7 +52,6 @@
     return null;
   }
 
-  // --- the real devicePixelRatio, captured before we shadow it -----------
   var dprGetter = null;
   try {
     var d = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio') ||
@@ -71,12 +64,9 @@
     return frozenDPR;
   }
 
-  // The game does its own layout maths with devicePixelRatio while it boots,
-  // and lying to it that early leaves the canvas sized to a corner of the
-  // window. So the hook reports the truth until the canvas exists.
-  var armed = false;
-  var scale = 1;
-
+  // Lying to the runtime before it lays itself out breaks the canvas size, so
+  // the hook stays truthful until the game canvas exists.
+  var armed = false, scale = 1;
   try {
     Object.defineProperty(window, 'devicePixelRatio', {
       configurable: true,
@@ -85,6 +75,7 @@
   } catch (e) { console.warn('[CloudClient] devicePixelRatio is locked', e); }
 
   function pokeResize() { try { window.dispatchEvent(new Event('resize')); } catch (e) {} }
+  function setScaleNow(v) { scale = v; if (armed) pokeResize(); }
 
   var armWait = 0;
   (function waitForCanvas() {
@@ -93,7 +84,8 @@
     if (armWait++ < 2400) setTimeout(waitForCanvas, 150);
   })();
 
-  // --- the options file --------------------------------------------------
+  /* --------------------------- options blob --------------------------- */
+
   function optionsKey() {
     for (var i = 0; i < localStorage.length; i++) {
       var k = localStorage.key(i);
@@ -121,25 +113,17 @@
       .then(function (buf) { return bytesToB64(new Uint8Array(buf)); });
   }
 
-  // Several mods write options at once on boot. Each write is a
-  // read-modify-write on one localStorage key, so without a queue they read the
-  // same starting file and the last one to finish wipes the others' changes -
-  // measured: 2 of 15 settings survived. Everything goes through this chain.
+  // All writes go through one queue - parallel read-modify-writes on the same
+  // key wiped each other out (2 of 15 settings survived) before this existed.
   var optQueue = Promise.resolve();
-
-  /** update(currentOptions) -> {key: value} overrides. Applies next boot. */
   function updateGameOptions(update) {
     optQueue = optQueue
       .then(function () { return getGameOptions(); })
-      .then(function (current) { return writeGameOptions(update(current) || {}); })
+      .then(function (cur) { return writeGameOptions(update(cur) || {}); })
       .catch(function (e) { console.warn('[CloudClient] options update failed', e); });
     return optQueue;
   }
-
-  /** Merge {key: value} into the game's options file. Takes effect next boot. */
-  function setGameOptions(over) {
-    return updateGameOptions(function () { return over; });
-  }
+  function setGameOptions(over) { return updateGameOptions(function () { return over; }); }
 
   function writeGameOptions(over) {
     if (typeof CompressionStream === 'undefined') return Promise.resolve(false);
@@ -155,13 +139,13 @@
         if (over.hasOwnProperty(name)) { lines[i] = name + ':' + over[name]; seen[name] = true; }
       }
       for (var o in over) if (!seen[o]) lines.push(o + ':' + over[o]);
-      return gzip(lines.filter(function (l) { return l !== ''; }).join('\n') + '\n');
+      return gzip(lines.filter(Boolean).join('\n') + '\n');
     }).then(function (b64) {
       localStorage.setItem(key || '_eaglymc.g', b64);
       needsReload = true;
       refreshStat();
       return true;
-    }).catch(function (err) { console.warn('[CloudClient] options write failed', err); return false; });
+    }).catch(function (e) { console.warn('[CloudClient] options write failed', e); return false; });
   }
 
   function getGameOptions() {
@@ -177,12 +161,9 @@
     }).catch(function () { return {}; });
   }
 
-  /* =================================================================== *
-   * resource pack installer (used by the animation mod)
-   * =================================================================== */
+  /* ------------------------ resource pack door ------------------------ */
 
   var PACK_DB = '_net_lax1dude_eaglercraft_v1_8_internal_PlatformFilesystem_1_8_8_resourcePacks';
-
   var ANIMATED = ['water_still', 'water_flow', 'lava_still', 'lava_flow', 'fire_layer_0',
     'fire_layer_1', 'portal', 'sea_lantern', 'command_block', 'prismarine_rough',
     'repeating_command_block', 'chain_command_block', 'fire_0', 'fire_1', 'soul_fire_0',
@@ -193,10 +174,6 @@
     'calibrated_sculk_sensor_input_side', 'crimson_stem', 'warped_stem', 'lantern',
     'soul_lantern', 'sea_pickle'];
 
-  /** Open the pack filesystem, creating it with the game's own schema if this
-   *  profile has never opened the resource pack screen. Version 1 with a single
-   *  "filesystem" store keyed on ["path"] is exactly what the client makes, so
-   *  it opens ours without noticing the difference. */
   function openPackDB() {
     return new Promise(function (res) {
       var q;
@@ -232,7 +209,6 @@
           data: freeze
         });
       });
-
       return new Promise(function (res) {
         var tx = db.transaction('filesystem', 'readwrite');
         var os = tx.objectStore('filesystem');
@@ -242,9 +218,7 @@
           try { if (manReq.result) man = JSON.parse(new TextDecoder().decode(manReq.result.data)); } catch (e) {}
           if (!man.resourcePacks) man.resourcePacks = [];
           man.resourcePacks = man.resourcePacks.filter(function (p) { return p.name !== PACK_NAME; });
-          man.resourcePacks.push({
-            timestamp: Date.now(), name: PACK_NAME, folder: PACK_NAME, domains: ['minecraft']
-          });
+          man.resourcePacks.push({ timestamp: Date.now(), name: PACK_NAME, folder: PACK_NAME, domains: ['minecraft'] });
           files.forEach(function (f) {
             os.put({ path: f.path, data: f.data.buffer.slice(f.data.byteOffset, f.data.byteOffset + f.data.byteLength) });
           });
@@ -256,7 +230,6 @@
     });
   }
 
-  /** Add/remove our pack from the game's selected list. */
   function selectPack(on) {
     return updateGameOptions(function (opts) {
       var list = [];
@@ -267,114 +240,93 @@
     });
   }
 
-  /* =================================================================== *
-   * mod registry
-   * =================================================================== */
+  /* ============================ mod registry =========================== */
 
   var mods = [];
-  var CATS = { perf: 'Performance', visual: 'Look & HUD', util: 'Extras', user: 'My Mods' };
+  var CATS = { perf: 'Perf', play: 'Gameplay', visual: 'HUD', util: 'Extras', user: 'My Mods' };
 
-  function register(mod) {
-    mods.push(mod);
-    if (!cfg.mods[mod.id]) cfg.mods[mod.id] = { on: !!mod.def, s: {} };
-    return mod;
+  function register(m) {
+    mods.push(m);
+    if (!cfg.mods[m.id]) cfg.mods[m.id] = { on: !!m.def, s: {} };
+    return m;
   }
   function modById(id) {
     for (var i = 0; i < mods.length; i++) if (mods[i].id === id) return mods[i];
     return null;
   }
   function isOn(id) { return !!(cfg.mods[id] && cfg.mods[id].on); }
-  function settingsOf(mod) {
-    var saved = (cfg.mods[mod.id] && cfg.mods[mod.id].s) || {};
+  function settingsOf(m) {
+    var saved = (cfg.mods[m.id] && cfg.mods[m.id].s) || {};
     var out = {};
-    (mod.settings || []).forEach(function (s) {
-      out[s.id] = saved[s.id] === undefined ? s.def : saved[s.id];
-    });
+    (m.settings || []).forEach(function (s) { out[s.id] = saved[s.id] === undefined ? s.def : saved[s.id]; });
     return out;
   }
-  function applyMod(mod) {
-    try { if (mod.apply) mod.apply(isOn(mod.id), settingsOf(mod)); }
-    catch (e) { console.warn('[CloudClient] mod "' + mod.id + '" failed', e); }
+  function applyMod(m) {
+    try { if (m.apply) m.apply(isOn(m.id), settingsOf(m)); }
+    catch (e) { console.warn('[CloudClient] mod "' + m.id + '" failed', e); }
   }
   function setMod(id, on) {
     cfg.mods[id].on = on; saveCfg();
-    var mod = modById(id);
-    if (mod) { applyMod(mod); if (mod.reload) needsReload = true; }
+    var m = modById(id);
+    if (m) { applyMod(m); if (m.reload) needsReload = true; }
     renderMenu();
   }
-  /** redraw = false while dragging a slider, so the control isn't replaced
-   *  underneath the pointer mid-drag. */
   function setSetting(id, key, value, redraw) {
     cfg.mods[id].s[key] = value; saveCfg();
-    var mod = modById(id);
-    if (mod) { applyMod(mod); if (mod.reload) needsReload = true; }
+    var m = modById(id);
+    if (m) { applyMod(m); if (m.reload) needsReload = true; }
     if (redraw === false) refreshStat(); else renderMenu();
   }
 
-  /* =================================================================== *
-   * built-in mods
-   * =================================================================== */
+  /** A mod from the store only shows in the panel once installed. */
+  function visible(m) { return !m.storeOnly || cfg.installed[m.storeOnly]; }
+
+  /* ============================ built-in mods ========================== */
+  /* These four are the EaglerSodium package. */
 
   register({
-    id: 'renderscale',
-    name: 'Render Scale',
-    cat: 'perf',
-    def: true,
-    desc: 'Draws the game smaller and lets the browser stretch it back out. Half scale is a quarter of the pixels. This is the biggest FPS win available in a browser.',
+    id: 'renderscale', name: 'Render Scale', cat: 'perf', def: true,
+    desc: 'Draws the game smaller and stretches it back out. Half scale = a quarter of the pixels. The biggest FPS win in a browser.',
     settings: [
       { id: 'scale', type: 'slider', label: 'Resolution', min: 25, max: 100, step: 5, def: 60, unit: '%' },
-      { id: 'smooth', type: 'toggle', label: 'Smooth the stretch (less blocky)', def: true }
+      { id: 'smooth', type: 'toggle', label: 'Smooth the stretch', def: true }
     ],
     apply: function (on, s) {
-      scale = on ? Math.max(0.25, Math.min(1, s.scale / 100)) : 1;
-      if (armed) pokeResize();
+      if (!isOn('sodiumish')) setScaleNow(on ? Math.max(0.25, Math.min(1, s.scale / 100)) : 1);
       var c = findCanvas();
       if (c) c.style.setProperty('image-rendering', (on && s.smooth) ? 'auto' : 'pixelated', 'important');
     }
   });
 
   var VIDEO_PRESETS = {
-    balanced: {
-      renderDistance: '4', particles: '1', mipmapLevels: '0', entityShadows: 'true',
+    balanced: { renderDistance: '4', particles: '1', mipmapLevels: '0', entityShadows: 'true',
       renderClouds: 'fast', fancyGraphics: 'false', ao: '1', fxaa: '2', shaders: 'false',
       enableDynamicLights: 'false', connectedTexturesOF: '0', customSkyOF: 'false',
-      smartLeavesOF: 'true', chunkFix: 'true', fog: 'true'
-    },
-    fast: {
-      renderDistance: '3', particles: '1', mipmapLevels: '0', entityShadows: 'false',
+      smartLeavesOF: 'true', chunkFix: 'true', fog: 'true' },
+    fast: { renderDistance: '3', particles: '1', mipmapLevels: '0', entityShadows: 'false',
       renderClouds: 'false', fancyGraphics: 'false', ao: '0', fxaa: '2', shaders: 'false',
       enableDynamicLights: 'false', connectedTexturesOF: '0', customSkyOF: 'false',
-      customItemsOF: 'false', betterGrassOF: '0', smartLeavesOF: 'true', chunkFix: 'true',
-      fog: 'true'
-    },
-    potato: {
-      renderDistance: '2', particles: '2', mipmapLevels: '0', entityShadows: 'false',
+      customItemsOF: 'false', betterGrassOF: '0', smartLeavesOF: 'true', chunkFix: 'true', fog: 'true' },
+    potato: { renderDistance: '2', particles: '2', mipmapLevels: '0', entityShadows: 'false',
       renderClouds: 'false', fancyGraphics: 'false', ao: '0', fxaa: '2', shaders: 'false',
       enableDynamicLights: 'false', connectedTexturesOF: '0', customSkyOF: 'false',
       customItemsOF: 'false', betterGrassOF: '0', smartLeavesOF: 'true',
       allowBlockAlternatives: 'false', chunkFix: 'true', fog: 'true', bobView: 'false',
-      enableFNAWSkins: 'false'
-    }
+      enableFNAWSkins: 'false' }
   };
 
   register({
-    id: 'videotweaks',
-    name: 'Fast Video Settings',
-    cat: 'perf',
-    def: true,
-    reload: true,
-    desc: 'Writes the heavy video options straight into the game before it starts: render distance, mipmaps, particles, shadows, clouds, connected textures, FXAA. Your keys, skin and sound are left alone.',
+    id: 'videotweaks', name: 'Fast Video Settings', cat: 'perf', def: true, reload: true,
+    desc: 'Writes the heavy video options into the game before it starts. Keys, skin and sound are left alone.',
     settings: [
       { id: 'preset', type: 'select', label: 'Preset', def: 'fast', options: [
-        { v: 'balanced', label: 'Balanced' }, { v: 'fast', label: 'Fast' }, { v: 'potato', label: 'Potato' }
-      ] },
-      { id: 'distance', type: 'slider', label: 'Render distance', min: 2, max: 8, step: 1, def: 0, unit: ' chunks',
+        { v: 'balanced', label: 'Balanced' }, { v: 'fast', label: 'Fast' }, { v: 'potato', label: 'Potato' } ] },
+      { id: 'distance', type: 'slider', label: 'Render distance', min: 0, max: 8, step: 1, def: 0, unit: ' chunks',
         hint: '0 = leave it to the preset' }
     ],
     apply: function (on, s) {
       if (!on) return;
-      var over = {};
-      var base = VIDEO_PRESETS[s.preset] || VIDEO_PRESETS.fast;
+      var over = {}, base = VIDEO_PRESETS[s.preset] || VIDEO_PRESETS.fast;
       for (var k in base) over[k] = base[k];
       if (s.distance > 0) over.renderDistance = String(s.distance);
       setGameOptions(over);
@@ -382,12 +334,8 @@
   });
 
   register({
-    id: 'noanim',
-    name: 'Freeze Animated Textures',
-    cat: 'perf',
-    def: true,
-    reload: true,
-    desc: 'Water, lava, fire and portals are re-uploaded to your graphics chip over and over while you play. This installs a tiny resource pack that gives them one frame each, so the uploads stop. Water goes still.',
+    id: 'noanim', name: 'Freeze Animated Textures', cat: 'perf', def: true, reload: true,
+    desc: 'Installs a tiny pack so water, lava, fire and portals stop being re-uploaded to the graphics chip every frame.',
     apply: function (on) {
       if (on) installNoAnimPack().then(function (ok) { if (ok) selectPack(true); });
       else selectPack(false);
@@ -395,27 +343,84 @@
   });
 
   register({
-    id: 'fpslimit',
-    name: 'Frame Limit',
-    cat: 'perf',
-    def: false,
-    reload: true,
-    desc: 'Caps how many frames the game will try to draw. A Chromebook that is running hot slows itself down; asking for fewer frames can keep it cooler and steadier.',
+    id: 'fpslimit', name: 'Frame Limit', cat: 'perf', def: false, reload: true,
+    desc: 'Caps the frame rate so a hot Chromebook stays steadier.',
     settings: [
       { id: 'max', type: 'select', label: 'Limit', def: '60', options: [
         { v: '30', label: '30 fps' }, { v: '45', label: '45 fps' }, { v: '60', label: '60 fps' },
-        { v: '120', label: '120 fps' }, { v: '260', label: 'Unlimited' }
-      ] }
+        { v: '120', label: '120 fps' }, { v: '260', label: 'Unlimited' } ] }
     ],
     apply: function (on, s) { if (on) setGameOptions({ maxFps: s.max }); }
   });
 
+  /* ------------------------- store-only mods -------------------------- */
+
+  var sodiumishOn = false, dynScale = 0.6;
+
   register({
-    id: 'skipcountdown',
-    name: 'Skip Launch Countdown',
-    cat: 'util',
-    def: true,
-    desc: 'Presses the "Skip Countdown" button for you so the game starts straight away.',
+    id: 'sodiumish', name: 'Sodiumish', cat: 'perf', def: false, storeOnly: 'sodiumish',
+    desc: 'Dynamic resolution. Watches your real FPS and moves the render scale up and down by itself to hold a target - sharp when the game is easy, fast when it gets busy.',
+    settings: [
+      { id: 'target', type: 'select', label: 'Hold', def: '45', options: [
+        { v: '30', label: '30 fps' }, { v: '45', label: '45 fps' }, { v: '60', label: '60 fps' } ] },
+      { id: 'floor', type: 'slider', label: 'Never below', min: 25, max: 60, step: 5, def: 35, unit: '%' }
+    ],
+    apply: function (on) { sodiumishOn = on; if (!on) applyMod(modById('renderscale')); }
+  });
+
+  register({
+    id: 'fullbright', name: 'Fullbright', cat: 'play', def: false, reload: true, storeOnly: 'fullbright',
+    desc: 'Turns the brightness far past maximum so caves are lit like daytime. Uses the game\'s own gamma setting.',
+    apply: function (on) { setGameOptions({ gamma: on ? '100.0' : '1.0' }); }
+  });
+
+  register({
+    id: 'zoom', name: 'Zoom', cat: 'play', def: false, storeOnly: 'zoom',
+    desc: 'Hold a key to zoom in, like OptiFine. Zooms the picture the game already drew.',
+    settings: [
+      { id: 'key', type: 'select', label: 'Hold', def: 'KeyC', options: [
+        { v: 'KeyC', label: 'C' }, { v: 'KeyZ', label: 'Z' }, { v: 'KeyX', label: 'X' } ] },
+      { id: 'power', type: 'slider', label: 'Zoom', min: 2, max: 4, step: 1, def: 2, unit: '×' }
+    ],
+    apply: function () {}
+  });
+
+  register({
+    id: 'keystrokes', name: 'Keystrokes', cat: 'visual', def: false, storeOnly: 'keystrokes',
+    desc: 'Shows your WASD, space and mouse buttons on screen while you play.',
+    apply: function (on) { keysEl.style.display = on ? 'block' : 'none'; }
+  });
+
+  register({
+    id: 'cps', name: 'CPS Counter', cat: 'visual', def: false, storeOnly: 'cps',
+    desc: 'Clicks per second, counted for each mouse button.',
+    apply: function (on) { cpsEl.style.display = on ? 'block' : 'none'; }
+  });
+
+  register({
+    id: 'tnttimer', name: 'TNT Countdown', cat: 'play', def: false, storeOnly: 'tnttimer',
+    desc: 'Press the key the moment TNT is lit and a 4-second fuse counts down on screen. (The game doesn\'t let outside code see its TNT, so you start the timer.)',
+    settings: [
+      { id: 'key', type: 'select', label: 'Start key', def: 'KeyV', options: [
+        { v: 'KeyV', label: 'V' }, { v: 'KeyB', label: 'B' }, { v: 'KeyG', label: 'G' } ] }
+    ],
+    apply: function () {}
+  });
+
+  register({
+    id: 'hitboxes', name: 'Hitboxes', cat: 'play', def: false, storeOnly: 'hitboxes',
+    desc: 'Fires the game\'s own F3+B chord to draw boxes around every entity. Use the button below while you\'re in a world.',
+    settings: [
+      { id: 'go', type: 'button', label: 'Toggle hitboxes now (F3+B)' }
+    ],
+    apply: function () {}
+  });
+
+  /* --------------------------- other built-ins ------------------------ */
+
+  register({
+    id: 'skipcountdown', name: 'Skip Launch Countdown', cat: 'util', def: true,
+    desc: 'Presses "Skip Countdown" for you.',
     apply: function (on) {
       if (!on) return;
       var tries = 0;
@@ -428,68 +433,45 @@
   });
 
   register({
-    id: 'gamehud',
-    name: 'Game HUD',
-    cat: 'visual',
-    def: true,
-    reload: true,
-    desc: "Turns the client's own corner readouts on and off.",
+    id: 'gamehud', name: 'Game HUD', cat: 'visual', def: true, reload: true,
+    desc: 'The client\'s own corner readouts.',
     settings: [
-      { id: 'fps', type: 'toggle', label: 'FPS + chunk counter', def: true },
+      { id: 'fps', type: 'toggle', label: 'FPS + chunks', def: true },
       { id: 'coords', type: 'toggle', label: 'Coordinates', def: true },
       { id: 'stats', type: 'toggle', label: 'Player stats', def: false },
-      { id: 'clock', type: 'toggle', label: '24 hour clock', def: false }
+      { id: 'clock', type: 'toggle', label: '24h clock', def: false }
     ],
     apply: function (on, s) {
       if (!on) return;
-      setGameOptions({
-        hudFps: String(!!s.fps), hudCoords: String(!!s.coords),
-        hudStats: String(!!s.stats), hud24h: String(!!s.clock)
-      });
+      setGameOptions({ hudFps: String(!!s.fps), hudCoords: String(!!s.coords),
+        hudStats: String(!!s.stats), hud24h: String(!!s.clock) });
     }
   });
 
   register({
-    id: 'perfhud',
-    name: 'CloudClient Overlay',
-    cat: 'visual',
-    def: false,
-    desc: 'A small readout in the top-left corner showing the frame rate and the resolution the game is really drawing at.',
+    id: 'perfhud', name: 'CloudClient Overlay', cat: 'visual', def: false,
+    desc: 'FPS and the true drawing resolution, top-right.',
     apply: function (on) { hudEl.style.display = on ? 'block' : 'none'; }
   });
 
   register({
-    id: 'watermark',
-    name: 'CloudClient Watermark',
-    cat: 'visual',
-    def: true,
-    desc: 'Little CloudClient tag in the corner.',
+    id: 'watermark', name: 'Watermark', cat: 'visual', def: true,
+    desc: 'The CloudClient tag in the corner.',
     apply: function (on) { markEl.style.display = on ? 'block' : 'none'; }
   });
 
   register({
-    id: 'keepawake',
-    name: 'Keep Screen Awake',
-    cat: 'util',
-    def: false,
-    desc: 'Stops the screen dimming or sleeping while you play. Some laptops ignore this.',
-    apply: function (on) {
-      if (on) requestWakeLock(); else releaseWakeLock();
-    }
+    id: 'keepawake', name: 'Keep Screen Awake', cat: 'util', def: false,
+    desc: 'Stops the screen dimming while you play.',
+    apply: function (on) { if (on) requestWakeLock(); else releaseWakeLock(); }
   });
 
   register({
-    id: 'title',
-    name: 'Rename The Tab',
-    cat: 'util',
-    def: true,
-    desc: 'Calls the browser tab "CloudClient" instead of the client\'s own name.',
-    apply: function (on) {
-      if (on) { document.title = 'CloudClient ' + VERSION; }
-    }
+    id: 'title', name: 'Rename The Tab', cat: 'util', def: true,
+    desc: 'Calls the tab CloudClient.',
+    apply: function (on) { if (on) document.title = 'CloudClient ' + VERSION; }
   });
 
-  /* --- wake lock ------------------------------------------------------- */
   var wakeLock = null;
   function requestWakeLock() {
     if (!navigator.wakeLock) return;
@@ -500,52 +482,76 @@
     if (!document.hidden && isOn('keepawake') && !wakeLock) requestWakeLock();
   });
 
-  /* =================================================================== *
-   * user mods
-   * =================================================================== */
+  /* ============================== the store ============================ */
 
-  // What a user mod gets to play with. Deliberately small and documented in
-  // the menu, so a mod written today keeps working later.
-  var api = {
-    version: VERSION,
-    canvas: findCanvas,
-    log: function () {
-      var args = ['[CloudClient]'].concat([].slice.call(arguments));
-      console.log.apply(console, args);
-    },
-    setOptions: setGameOptions,
-    getOptions: getGameOptions,
-    setRenderScale: function (pct) { setSetting('renderscale', 'scale', Math.max(25, Math.min(100, pct))); },
-    onFrame: function (fn) { frameHooks.push(fn); },
-    overlay: function (html) {
-      var box = document.createElement('div');
-      box.style.cssText = 'position:fixed;left:8px;bottom:' + (26 + overlayCount++ * 18) + 'px;' +
-        'z-index:2147483646;font:12px system-ui,sans-serif;color:#cbd5e1;' +
-        'text-shadow:0 1px 2px #000;pointer-events:none';
-      box.innerHTML = html;
-      root.appendChild(box);
-      return box;
-    }
-  };
+  var STORE = [
+    { id: 'eaglersodium', icon: '⚡', name: 'EaglerSodium', by: 'CloudClient', tag: 'perf pack',
+      desc: 'The original four: Render Scale, Fast Video Settings, Freeze Animated Textures and Frame Limit. The backbone of the client.',
+      mods: ['renderscale', 'videotweaks', 'noanim', 'fpslimit'], preinstalled: true },
+    { id: 'sodiumish', icon: '🧪', name: 'Sodiumish', by: 'CloudClient', tag: 'perf',
+      desc: 'Dynamic resolution: holds a target FPS by trading sharpness for speed automatically, second by second. Use it instead of setting Render Scale by hand.',
+      mods: ['sodiumish'] },
+    { id: 'potatopack', icon: '🥔', name: 'Potato Pack', by: 'CloudClient', tag: 'perf pack',
+      desc: 'One press for the weakest laptops: Potato video settings, 40% resolution, frozen animations, 30 fps cap.',
+      mods: [], run: function () {
+        setMod('renderscale', true); setSetting('renderscale', 'scale', 40);
+        setMod('videotweaks', true); setSetting('videotweaks', 'preset', 'potato');
+        setMod('noanim', true);
+        setMod('fpslimit', true); setSetting('fpslimit', 'max', '30');
+      } },
+    { id: 'smoothpack', icon: '🧈', name: 'Smooth Pack', by: 'CloudClient', tag: 'perf pack',
+      desc: 'The balanced setup: Fast video settings, 60% resolution, frozen animations, 60 fps cap. What most Chromebooks want.',
+      mods: [], run: function () {
+        setMod('renderscale', true); setSetting('renderscale', 'scale', 60);
+        setMod('videotweaks', true); setSetting('videotweaks', 'preset', 'fast');
+        setMod('noanim', true);
+        setMod('fpslimit', true); setSetting('fpslimit', 'max', '60');
+      } },
+    { id: 'fullbright', icon: '🔆', name: 'Fullbright', by: 'CloudClient', tag: 'gameplay',
+      desc: 'Caves lit like noon. Sets the game\'s gamma way past maximum. Needs a restart to kick in.',
+      mods: ['fullbright'] },
+    { id: 'zoom', icon: '🔍', name: 'Zoom', by: 'CloudClient', tag: 'gameplay',
+      desc: 'Hold C to zoom, like OptiFine. Pick the key and the power in the panel.',
+      mods: ['zoom'] },
+    { id: 'hitboxes', icon: '📦', name: 'Hitboxes', by: 'CloudClient', tag: 'gameplay',
+      desc: 'The game\'s own hitbox view (F3+B), on a button in the panel. Boxes around every entity.',
+      mods: ['hitboxes'] },
+    { id: 'tnttimer', icon: '🧨', name: 'TNT Countdown', by: 'CloudClient', tag: 'gameplay',
+      desc: 'A 4-second fuse timer on screen. You press V when the TNT is lit - the game won\'t tell outside code about its TNT, so the timing is yours.',
+      mods: ['tnttimer'] },
+    { id: 'keystrokes', icon: '⌨️', name: 'Keystrokes', by: 'CloudClient', tag: 'HUD',
+      desc: 'WASD, space and mouse buttons drawn on screen, like every PvP client since forever.',
+      mods: ['keystrokes'] },
+    { id: 'cps', icon: '🖱️', name: 'CPS Counter', by: 'CloudClient', tag: 'HUD',
+      desc: 'Live clicks-per-second for both mouse buttons.',
+      mods: ['cps'] }
+  ];
 
-  var frameHooks = [];
-  var overlayCount = 0;   // so two user overlays don't sit on top of each other
+  if (!cfg.installed.eaglersodium) { cfg.installed.eaglersodium = true; saveCfg(); }
 
-  function runUserMod(m) {
-    if (!m.on) return;
-    try {
-      // eslint-disable-next-line no-new-func
-      new Function('cc', m.code)(api);
-      m.error = null;
-    } catch (e) {
-      m.error = String(e && e.message ? e.message : e);
-      console.warn('[CloudClient] user mod "' + m.name + '" crashed', e);
-    }
+  function installStore(item, btn) {
+    if (btn) { btn.classList.add('busy'); }
+    setTimeout(function () {                       // long enough to read as work
+      cfg.installed[item.id] = true; saveCfg();
+      (item.mods || []).forEach(function (id) { setMod(id, true); });
+      if (item.run) item.run();
+      if (btn) {
+        btn.classList.remove('busy');
+        btn.classList.add('done');
+        btn.textContent = 'Installed ✓';
+      }
+      setTimeout(renderStore, 700);
+      renderMenu();
+    }, 700);
+  }
+  function uninstallStore(item) {
+    delete cfg.installed[item.id]; saveCfg();
+    (item.mods || []).forEach(function (id) { setMod(id, false); });
+    renderStore();
+    renderMenu();
   }
 
-  /* =================================================================== *
-   * UI
-   * =================================================================== */
+  /* =============================== UI =================================== */
 
   var host = document.createElement('div');
   host.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647';
@@ -554,74 +560,181 @@
   root.innerHTML = [
     '<style>',
     ':host,*{box-sizing:border-box}',
+    '@keyframes ccfade{from{opacity:0}to{opacity:1}}',
+    '@keyframes ccpop{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}',
+    '@keyframes ccdrift{0%{background-position:0 0}100%{background-position:480px 480px}}',
+    '@keyframes ccspin{to{transform:rotate(360deg)}}',
+    '@keyframes ccpulse{0%,100%{transform:scale(1)}50%{transform:scale(1.045)}}',
     '.btn{position:fixed;bottom:8px;right:8px;width:38px;height:38px;border:0;border-radius:10px;',
     '  background:rgba(13,17,23,.78);color:#7dd3fc;font-size:18px;line-height:38px;text-align:center;',
-    '  cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.5);padding:0}',
-    '.btn:hover{background:rgba(13,17,23,.96)}',
+    '  cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.5);padding:0;transition:transform .12s ease,background .12s}',
+    '.btn:hover{background:rgba(13,17,23,.96);transform:scale(1.08)}',
     '.mark{position:fixed;left:8px;bottom:6px;font:600 12px system-ui,sans-serif;color:#7dd3fc;',
     '  text-shadow:0 1px 3px #000;pointer-events:none;letter-spacing:.3px}',
-    '.hud{position:fixed;right:8px;top:6px;text-align:right;font:600 12px/1.5 ui-monospace,monospace;color:#7dd3fc;',
-    '  text-shadow:0 1px 3px #000;pointer-events:none;display:none}',
-    '.panel{position:fixed;right:8px;bottom:52px;width:330px;max-height:calc(100vh - 62px);',
-    '  display:none;flex-direction:column;border-radius:14px;overflow:hidden;',
-    '  background:rgba(13,17,23,.97);border:1px solid rgba(125,211,252,.18);',
-    '  box-shadow:0 10px 40px rgba(0,0,0,.6);color:#e6edf3;font:13px/1.45 system-ui,sans-serif}',
-    '.panel.on{display:flex}',
-    '.head{padding:10px 12px 8px;border-bottom:1px solid rgba(255,255,255,.07)}',
-    '.head h1{margin:0;font-size:16px;letter-spacing:.2px}',
+    '.hud{position:fixed;right:8px;top:6px;text-align:right;font:600 12px/1.5 ui-monospace,monospace;',
+    '  color:#7dd3fc;text-shadow:0 1px 3px #000;pointer-events:none;display:none}',
+    '.keys{position:fixed;left:12px;bottom:64px;display:none;pointer-events:none}',
+    '.keys .kr{display:flex;gap:3px;justify-content:center;margin-top:3px}',
+    '.keys .k{width:30px;height:30px;border-radius:6px;background:rgba(13,17,23,.6);color:#e6edf3;',
+    '  font:600 12px system-ui;display:flex;align-items:center;justify-content:center;transition:background .08s}',
+    '.keys .k.w{width:46px}.keys .k.down{background:#0ea5e9;color:#04202e}',
+    '.cps{position:fixed;left:12px;bottom:34px;display:none;font:600 12px ui-monospace,monospace;',
+    '  color:#7dd3fc;text-shadow:0 1px 3px #000;pointer-events:none}',
+    '.tnt{position:fixed;top:18%;left:50%;transform:translateX(-50%);display:none;',
+    '  font:700 34px ui-monospace,monospace;color:#f87171;text-shadow:0 2px 8px #000;pointer-events:none}',
+    '.home{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;',
+    '  gap:14px;background:radial-gradient(1000px 500px at 50% -10%,#123047 0%,#0b1017 55%,#07090d 100%);z-index:5;',
+    '  animation:ccfade .4s ease}',
+    '.home::before{content:"";position:absolute;inset:0;opacity:.25;pointer-events:none;',
+    '  background-image:radial-gradient(#7dd3fc22 1.5px,transparent 1.5px);background-size:24px 24px;',
+    '  animation:ccdrift 60s linear infinite}',
+    '.home.hide{transition:opacity .45s ease;opacity:0;pointer-events:none}',
+    '.hlogo{font:700 clamp(34px,8vw,64px)/1.1 system-ui,sans-serif;color:#e6edf3;letter-spacing:-.5px;',
+    '  text-shadow:0 4px 30px rgba(125,211,252,.35);animation:ccpop .5s ease;position:relative}',
+    '.hlogo b{color:#7dd3fc}',
+    '.hsub{color:#94a3b8;font:14px system-ui;margin-bottom:12px;animation:ccpop .6s ease;position:relative}',
+    '.hbtns{display:flex;gap:12px;animation:ccpop .7s ease;position:relative}',
+    '.hplay{padding:14px 44px;border:0;border-radius:12px;font:700 17px system-ui;cursor:pointer;',
+    '  background:linear-gradient(90deg,#0ea5e9,#38bdf8);color:#04202e;box-shadow:0 8px 30px rgba(14,165,233,.4);',
+    '  transition:transform .12s ease,box-shadow .12s;animation:ccpulse 2.4s ease infinite}',
+    '.hplay:hover{transform:translateY(-2px);box-shadow:0 12px 36px rgba(14,165,233,.55)}',
+    '.hmods{padding:14px 30px;border:1px solid rgba(125,211,252,.4);border-radius:12px;font:600 15px system-ui;',
+    '  cursor:pointer;background:rgba(125,211,252,.08);color:#7dd3fc;transition:background .12s,transform .12s}',
+    '.hmods:hover{background:rgba(125,211,252,.18);transform:translateY(-2px)}',
+    '.hfoot{position:absolute;bottom:14px;color:#475569;font:12px system-ui}',
+    '.store{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:6;',
+    '  background:rgba(4,8,12,.72)}',
+    '.store.on{display:flex;animation:ccfade .2s ease}',
+    '.swin{width:min(680px,94vw);max-height:88vh;display:flex;flex-direction:column;border-radius:16px;',
+    '  overflow:hidden;background:#0d1117;border:1px solid rgba(125,211,252,.2);',
+    '  box-shadow:0 20px 60px rgba(0,0,0,.7);animation:ccpop .25s ease}',
+    '.shead{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.07)}',
+    '.shead h2{margin:0;font:700 17px system-ui;color:#e6edf3;flex:1}',
+    '.shead h2 b{color:#7dd3fc}',
+    '.sx{border:0;background:#21262d;color:#e6edf3;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:14px}',
+    '.sx:hover{background:#30363d}',
+    '.sgrid{overflow-y:auto;padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}',
+    '.scard{border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px 13px;background:rgba(255,255,255,.02);',
+    '  display:flex;flex-direction:column;gap:7px;transition:transform .12s ease,border-color .12s;animation:ccpop .3s ease both}',
+    '.scard:hover{transform:translateY(-2px);border-color:rgba(125,211,252,.35)}',
+    '.srow{display:flex;align-items:center;gap:9px}',
+    '.sicon{width:34px;height:34px;border-radius:9px;background:rgba(125,211,252,.1);display:flex;',
+    '  align-items:center;justify-content:center;font-size:17px;flex:none}',
+    '.sname{font:600 14px system-ui;color:#e6edf3}',
+    '.sby{font:11px system-ui;color:#64748b}',
+    '.stag{margin-left:auto;font:600 9.5px system-ui;letter-spacing:.06em;text-transform:uppercase;',
+    '  color:#7dd3fc;background:rgba(125,211,252,.1);padding:3px 7px;border-radius:20px;flex:none}',
+    '.sdesc{font:12px/1.5 system-ui;color:#8b949e;flex:1}',
+    '.sinstall{align-self:flex-start;padding:7px 18px;border:0;border-radius:8px;cursor:pointer;',
+    '  font:700 12px system-ui;background:linear-gradient(90deg,#0ea5e9,#38bdf8);color:#04202e;',
+    '  transition:transform .12s,filter .12s;position:relative;min-width:86px}',
+    '.sinstall:hover{transform:scale(1.04);filter:brightness(1.08)}',
+    '.sinstall.busy{pointer-events:none;color:transparent}',
+    '.sinstall.busy::after{content:"";position:absolute;inset:0;margin:auto;width:14px;height:14px;',
+    '  border:2px solid #04202e;border-top-color:transparent;border-radius:50%;animation:ccspin .6s linear infinite}',
+    '.sinstall.done{background:#238636;color:#fff;pointer-events:none;animation:ccpop .3s ease}',
+    '.sun{padding:6px 12px;border:1px solid rgba(255,255,255,.15);border-radius:8px;',
+    '  background:transparent;color:#8b949e;font:600 11px system-ui;cursor:pointer}',
+    '.sun:hover{color:#f87171;border-color:#f87171}',
+    '.sdone-row{display:flex;gap:8px;align-items:center}',
+    '.sbadge{font:700 12px system-ui;color:#3fb950}',
+    '.panel{position:fixed;right:8px;bottom:52px;width:320px;max-height:calc(100vh - 62px);display:none;',
+    '  flex-direction:column;border-radius:14px;overflow:hidden;background:rgba(13,17,23,.97);',
+    '  border:1px solid rgba(125,211,252,.18);box-shadow:0 10px 40px rgba(0,0,0,.6);color:#e6edf3;',
+    '  font:13px/1.45 system-ui,sans-serif}',
+    '.panel.on{display:flex;animation:ccpop .18s ease}',
+    '.head{padding:9px 12px 7px;border-bottom:1px solid rgba(255,255,255,.07)}',
+    '.head .trow{display:flex;align-items:center;gap:8px}',
+    '.head h1{margin:0;font-size:15px;flex:1}',
     '.head h1 b{color:#7dd3fc}',
-    '.head .sub{font-size:11px;color:#8b949e;margin-top:2px}',
-    '.turbo{display:block;width:100%;margin-top:8px;padding:7px 0;border:0;border-radius:9px;',
-    '  background:linear-gradient(90deg,#0ea5e9,#38bdf8);color:#04202e;font:700 13px system-ui;cursor:pointer}',
-    '.turbo:hover{filter:brightness(1.08)}',
-    '.tabs{display:flex;gap:4px;padding:8px 10px 0}',
-    '.tab{flex:1;padding:6px 0;border:0;border-radius:8px 8px 0 0;background:transparent;color:#8b949e;',
-    '  font:600 11px system-ui;cursor:pointer}',
+    '.head .sub{font-size:10.5px;color:#8b949e;margin-top:1px}',
+    '.storebtn{border:1px solid rgba(125,211,252,.4);background:rgba(125,211,252,.1);color:#7dd3fc;',
+    '  border-radius:7px;padding:4px 10px;font:600 11px system-ui;cursor:pointer;transition:background .12s}',
+    '.storebtn:hover{background:rgba(125,211,252,.22)}',
+    '.turbo{display:block;width:100%;margin-top:7px;padding:6px 0;border:0;border-radius:8px;',
+    '  background:linear-gradient(90deg,#0ea5e9,#38bdf8);color:#04202e;font:700 12px system-ui;cursor:pointer;',
+    '  transition:filter .12s}',
+    '.turbo:hover{filter:brightness(1.1)}',
+    '.tabs{display:flex;gap:2px;padding:6px 8px 0}',
+    '.tab{flex:1;padding:5px 0;border:0;border-radius:7px 7px 0 0;background:transparent;color:#8b949e;',
+    '  font:600 10.5px system-ui;cursor:pointer;transition:color .1s}',
     '.tab.sel{background:rgba(125,211,252,.12);color:#7dd3fc}',
-    '.body{overflow-y:auto;padding:8px 10px 12px;flex:1;min-height:110px}',
-    '.mod{border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:8px 9px;margin-bottom:6px;',
-    '  background:rgba(255,255,255,.02)}',
-    '.mod.on{border-color:rgba(125,211,252,.35);background:rgba(125,211,252,.06)}',
-    '.row{display:flex;align-items:center;gap:8px}',
-    '.name{font-weight:600;font-size:13px;flex:1}',
-    '.desc{font-size:11.5px;color:#8b949e;margin-top:4px}',
-    '.sw{position:relative;width:36px;height:20px;border-radius:20px;background:#30363d;border:0;cursor:pointer;flex:none}',
-    '.sw i{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#8b949e;transition:.15s}',
-    '.sw.on{background:#0ea5e9}.sw.on i{left:18px;background:#04202e}',
-    '.sets{margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.08);display:none}',
-    '.mod.on .sets{display:block}',
-    '.set{margin-bottom:8px}',
-    '.set label{display:block;font-size:11.5px;color:#c9d1d9;margin-bottom:3px}',
+    '.body{overflow-y:auto;padding:6px 8px 10px;flex:1;min-height:100px}',
+    '.mod{border:1px solid rgba(255,255,255,.06);border-radius:9px;margin-bottom:5px;',
+    '  background:rgba(255,255,255,.02);overflow:hidden;transition:border-color .12s}',
+    '.mod.on{border-color:rgba(125,211,252,.3)}',
+    '.mrow{display:flex;align-items:center;gap:7px;padding:7px 9px;cursor:pointer}',
+    '.mrow:hover{background:rgba(255,255,255,.03)}',
+    '.mname{font:600 12.5px system-ui;flex:1}',
+    '.mcaret{color:#475569;font-size:10px;transition:transform .15s}',
+    '.mod.open .mcaret{transform:rotate(90deg)}',
+    '.mmore{display:none;padding:0 10px 9px}',
+    '.mod.open .mmore{display:block;animation:ccfade .15s ease}',
+    '.mdesc{font:11.5px/1.5 system-ui;color:#8b949e;margin-bottom:7px}',
+    '.sw{position:relative;width:32px;height:18px;border-radius:18px;background:#30363d;border:0;cursor:pointer;',
+    '  flex:none;transition:background .15s}',
+    '.sw i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#8b949e;transition:.15s}',
+    '.sw.on{background:#0ea5e9}.sw.on i{left:16px;background:#04202e}',
+    '.set{margin-bottom:7px}',
+    '.set label{display:block;font-size:11px;color:#c9d1d9;margin-bottom:2px}',
     '.set label b{color:#7dd3fc}',
     '.set input[type=range]{width:100%;accent-color:#38bdf8}',
-    '.set select{width:100%;padding:5px;border-radius:7px;background:#161b22;color:#e6edf3;',
-    '  border:1px solid rgba(255,255,255,.12);font-size:12px}',
-    '.chk{display:flex;align-items:center;gap:7px;font-size:11.5px;color:#c9d1d9;cursor:pointer;margin-bottom:5px}',
-    '.hint{font-size:10.5px;color:#6e7681;margin-top:2px}',
-    '.foot{padding:8px 10px;border-top:1px solid rgba(255,255,255,.07);display:flex;gap:6px}',
-    '.foot button{flex:1;padding:7px 0;border-radius:8px;border:1px solid rgba(255,255,255,.12);',
-    '  background:#21262d;color:#e6edf3;font-size:11.5px;cursor:pointer}',
+    '.set select{width:100%;padding:4px;border-radius:6px;background:#161b22;color:#e6edf3;',
+    '  border:1px solid rgba(255,255,255,.12);font-size:11.5px}',
+    '.setbtn{width:100%;padding:6px 0;border-radius:7px;border:1px solid rgba(125,211,252,.4);',
+    '  background:rgba(125,211,252,.1);color:#7dd3fc;font:600 11.5px system-ui;cursor:pointer}',
+    '.setbtn:hover{background:rgba(125,211,252,.2)}',
+    '.chk{display:flex;align-items:center;gap:6px;font-size:11px;color:#c9d1d9;cursor:pointer;margin-bottom:4px}',
+    '.hint{font-size:10px;color:#6e7681;margin-top:1px}',
+    '.foot{padding:6px 8px;border-top:1px solid rgba(255,255,255,.07);display:flex;gap:5px}',
+    '.foot button{flex:1;padding:6px 0;border-radius:7px;border:1px solid rgba(255,255,255,.12);',
+    '  background:#21262d;color:#e6edf3;font-size:11px;cursor:pointer}',
     '.foot button:hover{background:#30363d}',
     '.reload{background:#0ea5e9;border-color:#0ea5e9;color:#04202e;font-weight:700}',
-    '.add{width:100%;padding:8px 0;border-radius:9px;border:1px dashed rgba(125,211,252,.4);',
-    '  background:transparent;color:#7dd3fc;font-size:12px;cursor:pointer;margin-bottom:8px}',
+    '.add{width:100%;padding:7px 0;border-radius:8px;border:1px dashed rgba(125,211,252,.4);',
+    '  background:transparent;color:#7dd3fc;font-size:11.5px;cursor:pointer;margin-bottom:7px}',
     'textarea,input.txt{width:100%;background:#0d1117;color:#e6edf3;border:1px solid rgba(255,255,255,.12);',
     '  border-radius:8px;padding:7px;font:12px ui-monospace,monospace;margin-bottom:6px}',
-    'textarea{height:120px;resize:vertical}',
+    'textarea{height:110px;resize:vertical}',
     '.mini{padding:5px 9px;border-radius:7px;border:1px solid rgba(255,255,255,.12);background:#21262d;',
     '  color:#e6edf3;font-size:11px;cursor:pointer}',
-    '.err{color:#f85149;font-size:11px;margin-top:4px}',
-    '.doc{font-size:11px;color:#8b949e;background:rgba(255,255,255,.03);border-radius:8px;padding:8px;margin-bottom:8px}',
+    '.err{color:#f85149;font-size:11px;margin:0 10px 8px}',
+    '.doc{font-size:10.5px;color:#8b949e;background:rgba(255,255,255,.03);border-radius:8px;padding:7px;margin-bottom:7px}',
     '.doc code{color:#7dd3fc;font-family:ui-monospace,monospace}',
+    '.row{display:flex;gap:6px;align-items:center}',
     '</style>',
+    '<div class="home" id="home">',
+    '  <div class="hlogo">&#9729; Cloud<b>Client</b></div>',
+    '  <div class="hsub">the fast way to play &mdash; v' + VERSION + '</div>',
+    '  <div class="hbtns">',
+    '    <button class="hplay" id="hplay">&#9654;&nbsp; Play</button>',
+    '    <button class="hmods" id="hmods">&#128230; Mods</button>',
+    '  </div>',
+    '  <div class="hfoot">10+ mods &middot; nothing to install &middot; your worlds are untouched</div>',
+    '</div>',
+    '<div class="store" id="store">',
+    '  <div class="swin">',
+    '    <div class="shead"><h2>&#128230; Cloud<b>Client</b> Mods</h2><button class="sx" id="sx">&#10005;</button></div>',
+    '    <div class="sgrid" id="sgrid"></div>',
+    '  </div>',
+    '</div>',
     '<div class="mark">&#9729; CloudClient</div>',
     '<div class="hud" id="hud"></div>',
+    '<div class="keys" id="keys">',
+    '  <div class="kr"><div class="k" data-k="KeyW">W</div></div>',
+    '  <div class="kr"><div class="k" data-k="KeyA">A</div><div class="k" data-k="KeyS">S</div><div class="k" data-k="KeyD">D</div></div>',
+    '  <div class="kr"><div class="k w" data-k="M0">LMB</div><div class="k w" data-k="M2">RMB</div></div>',
+    '  <div class="kr"><div class="k" data-k="Space" style="width:96px">&#9141;</div></div>',
+    '</div>',
+    '<div class="cps" id="cpsbox"></div>',
+    '<div class="tnt" id="tnt"></div>',
     '<button class="btn" id="open" title="CloudClient (Ctrl+Shift+C)">&#9729;</button>',
     '<div class="panel" id="panel">',
     '  <div class="head">',
-    '    <h1>&#9729; <b>CloudClient</b> <span style="font-size:11px;color:#8b949e">v' + VERSION + '</span></h1>',
+    '    <div class="trow"><h1>&#9729; <b>CloudClient</b></h1>',
+    '      <button class="storebtn" id="storebtn">&#128230; Mods</button></div>',
     '    <div class="sub" id="stat">&nbsp;</div>',
-    '    <button class="turbo" id="turbo">&#9889; TURBO &mdash; make it as fast as possible</button>',
+    '    <button class="turbo" id="turbo">&#9889; TURBO</button>',
     '  </div>',
     '  <div class="tabs" id="tabs"></div>',
     '  <div class="body" id="body"></div>',
@@ -635,7 +748,76 @@
   function $(sel) { return root.querySelector(sel); }
 
   var panel = $('#panel'), hudEl = $('#hud'), markEl = $('.mark');
-  var open = false, tab = 'perf', view = 'list';
+  var keysEl = $('#keys'), cpsEl = $('#cpsbox'), tntEl = $('#tnt');
+  var open = false, tab = 'perf', view = 'list', expanded = {};
+
+  /* ------------------------------ home -------------------------------- */
+
+  var homeEl = $('#home');
+  $('#hplay').onclick = function () {
+    homeEl.classList.add('hide');
+    setTimeout(function () { homeEl.style.display = 'none'; }, 500);
+  };
+  $('#hmods').onclick = function () { openStore(); };
+
+  /* ------------------------------ store ------------------------------- */
+
+  var storeEl = $('#store');
+  function openStore() { storeEl.classList.add('on'); renderStore(); }
+  $('#sx').onclick = function () { storeEl.classList.remove('on'); };
+  storeEl.addEventListener('click', function (e) { if (e.target === storeEl) storeEl.classList.remove('on'); });
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function renderStore() {
+    var grid = $('#sgrid');
+    grid.innerHTML = '';
+    STORE.forEach(function (item, i) {
+      var card = document.createElement('div');
+      card.className = 'scard';
+      card.style.animationDelay = (i * 40) + 'ms';
+      var installed = !!cfg.installed[item.id];
+
+      var row = document.createElement('div');
+      row.className = 'srow';
+      row.innerHTML = '<div class="sicon">' + item.icon + '</div>' +
+        '<div><div class="sname">' + esc(item.name) + '</div><div class="sby">by ' + esc(item.by) + '</div></div>' +
+        '<div class="stag">' + esc(item.tag) + '</div>';
+      card.appendChild(row);
+
+      var desc = document.createElement('div');
+      desc.className = 'sdesc';
+      desc.textContent = item.desc;
+      card.appendChild(desc);
+
+      if (!installed) {
+        var b = document.createElement('button');
+        b.className = 'sinstall';
+        b.textContent = 'Install';
+        b.onclick = function () { installStore(item, b); };
+        card.appendChild(b);
+      } else {
+        var doneRow = document.createElement('div');
+        doneRow.className = 'sdone-row';
+        doneRow.innerHTML = '<span class="sbadge">✓ Installed</span>';
+        if (!item.preinstalled) {
+          var un = document.createElement('button');
+          un.className = 'sun';
+          un.textContent = 'Remove';
+          un.onclick = function () { uninstallStore(item); };
+          doneRow.appendChild(un);
+        }
+        card.appendChild(doneRow);
+      }
+      grid.appendChild(card);
+    });
+  }
+
+  /* ------------------------------ panel -------------------------------- */
 
   function toggle(force) {
     open = force === undefined ? !open : force;
@@ -646,26 +828,15 @@
     }
   }
 
-  /* --- rendering the menu ---------------------------------------------- */
-
-  function esc(s) {
-    return String(s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
-
-  /** Cheap: header numbers only. Safe to run on a timer - it never replaces
-   *  controls the player is in the middle of using. */
   function refreshStat() {
     if (!open) return;
     var c = findCanvas();
     $('#stat').textContent = c
-      ? ('drawing ' + c.width + '×' + c.height + ' → screen ' + c.clientWidth + '×' + c.clientHeight)
+      ? (fps + ' fps · drawing ' + c.width + '×' + c.height)
       : 'waiting for the game…';
     $('#reload').style.display = needsReload ? 'block' : 'none';
   }
 
-  /** Full redraw. Only on a real change - a tab switch, a toggle, an edit. */
   function renderMenu() {
     if (!open) return;
     refreshStat();
@@ -680,51 +851,46 @@
       tabs.appendChild(b);
     });
 
-    if (view === 'editor') return;      // the editor owns the body; leave it be
+    if (view === 'editor') return;
 
     var body = $('#body');
     body.innerHTML = '';
     if (tab === 'user') { renderUserTab(body); return; }
-
-    mods.filter(function (m) { return m.cat === tab; }).forEach(function (m) {
+    mods.filter(function (m) { return m.cat === tab && visible(m); }).forEach(function (m) {
       body.appendChild(renderMod(m));
     });
   }
 
   function renderMod(m) {
-    var on = isOn(m.id);
-    var s = settingsOf(m);
+    var on = isOn(m.id), s = settingsOf(m);
     var box = document.createElement('div');
-    box.className = 'mod' + (on ? ' on' : '');
+    box.className = 'mod' + (on ? ' on' : '') + (expanded[m.id] ? ' open' : '');
 
     var row = document.createElement('div');
-    row.className = 'row';
-    row.innerHTML = '<div class="name">' + esc(m.name) + '</div>';
+    row.className = 'mrow';
+    row.innerHTML = '<span class="mcaret">▶</span><div class="mname">' + esc(m.name) + '</div>';
     var sw = document.createElement('button');
     sw.className = 'sw' + (on ? ' on' : '');
     sw.innerHTML = '<i></i>';
-    sw.onclick = function () { setMod(m.id, !isOn(m.id)); };
+    sw.onclick = function (e) { e.stopPropagation(); setMod(m.id, !isOn(m.id)); };
     row.appendChild(sw);
+    row.onclick = function () { expanded[m.id] = !expanded[m.id]; renderMenu(); };
     box.appendChild(row);
 
+    var more = document.createElement('div');
+    more.className = 'mmore';
     var desc = document.createElement('div');
-    desc.className = 'desc';
+    desc.className = 'mdesc';
     desc.textContent = m.desc;
-    box.appendChild(desc);
-
-    if (m.settings && m.settings.length) {
-      var sets = document.createElement('div');
-      sets.className = 'sets';
-      m.settings.forEach(function (def) { sets.appendChild(renderSetting(m, def, s[def.id])); });
-      box.appendChild(sets);
-    }
+    more.appendChild(desc);
+    (m.settings || []).forEach(function (def) { more.appendChild(renderSetting(m, def, s[def.id])); });
+    box.appendChild(more);
     return box;
   }
 
   function renderSetting(m, def, value) {
     var wrap = document.createElement('div');
     wrap.className = 'set';
-
     if (def.type === 'toggle') {
       var lab = document.createElement('label');
       lab.className = 'chk';
@@ -736,20 +902,24 @@
       wrap.appendChild(lab);
       return wrap;
     }
-
+    if (def.type === 'button') {
+      var btn = document.createElement('button');
+      btn.className = 'setbtn';
+      btn.textContent = def.label;
+      btn.onclick = function () { if (m.id === 'hitboxes') pressHitboxes(); };
+      wrap.appendChild(btn);
+      return wrap;
+    }
     var label = document.createElement('label');
     if (def.type === 'slider') {
       label.innerHTML = esc(def.label) + ': <b>' +
         (def.id === 'distance' && !value ? 'preset' : esc(value) + esc(def.unit || '')) + '</b>';
-    } else {
-      label.textContent = def.label;
-    }
+    } else label.textContent = def.label;
     wrap.appendChild(label);
 
     if (def.type === 'slider') {
       var r = document.createElement('input');
       r.type = 'range'; r.min = def.min; r.max = def.max; r.step = def.step; r.value = value;
-      if (def.id === 'distance') r.min = 0;
       r.oninput = function () {
         var v = Number(r.value);
         label.innerHTML = esc(def.label) + ': <b>' +
@@ -775,14 +945,44 @@
     return wrap;
   }
 
+  /* ------------------------------ user mods ----------------------------- */
+
+  var frameHooks = [];
+  var overlayCount = 0;
+  var api = {
+    version: VERSION,
+    canvas: findCanvas,
+    log: function () { console.log.apply(console, ['[CloudClient]'].concat([].slice.call(arguments))); },
+    setOptions: setGameOptions,
+    getOptions: getGameOptions,
+    setRenderScale: function (pct) { setSetting('renderscale', 'scale', Math.max(25, Math.min(100, pct))); },
+    onFrame: function (fn) { frameHooks.push(fn); },
+    overlay: function (html) {
+      var box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:8px;bottom:' + (26 + overlayCount++ * 18) + 'px;' +
+        'z-index:2147483646;font:12px system-ui,sans-serif;color:#cbd5e1;text-shadow:0 1px 2px #000;pointer-events:none';
+      box.innerHTML = html;
+      root.appendChild(box);
+      return box;
+    }
+  };
+
+  function runUserMod(m) {
+    if (!m.on) return;
+    try { new Function('cc', m.code)(api); m.error = null; }
+    catch (e) {
+      m.error = String(e && e.message ? e.message : e);
+      console.warn('[CloudClient] user mod "' + m.name + '" crashed', e);
+    }
+  }
+
   function renderUserTab(body) {
     var doc = document.createElement('div');
     doc.className = 'doc';
-    doc.innerHTML = 'Your mod is JavaScript that runs when the game starts. It gets a helper called ' +
-      '<code>cc</code>:<br><code>cc.log(msg)</code>, <code>cc.canvas()</code>, ' +
-      '<code>cc.setRenderScale(50)</code>, <code>cc.setOptions({renderDistance:"2"})</code>, ' +
-      '<code>cc.overlay("&lt;b&gt;hi&lt;/b&gt;")</code>, <code>cc.onFrame(fn)</code>.' +
-      '<br><br>Only paste code you trust &mdash; it runs with the game.';
+    doc.innerHTML = 'A mod is JavaScript that runs at launch, with a helper <code>cc</code>: ' +
+      '<code>cc.log()</code>, <code>cc.canvas()</code>, <code>cc.setRenderScale(50)</code>, ' +
+      '<code>cc.setOptions({...})</code>, <code>cc.overlay(html)</code>, <code>cc.onFrame(fn)</code>. ' +
+      'Only paste code you trust.';
     body.appendChild(doc);
 
     var add = document.createElement('button');
@@ -791,43 +991,34 @@
     add.onclick = function () { showEditor(null); };
     body.appendChild(add);
 
-    if (!userMods.length) {
-      var none = document.createElement('div');
-      none.className = 'desc';
-      none.textContent = 'No mods of your own yet.';
-      body.appendChild(none);
-    }
-
     userMods.forEach(function (m, i) {
       var box = document.createElement('div');
       box.className = 'mod' + (m.on ? ' on' : '');
       var row = document.createElement('div');
-      row.className = 'row';
-      row.innerHTML = '<div class="name">' + esc(m.name) + '</div>';
-
+      row.className = 'mrow';
+      row.innerHTML = '<div class="mname">' + esc(m.name) + '</div>';
       var edit = document.createElement('button');
       edit.className = 'mini'; edit.textContent = 'Edit';
-      edit.onclick = function () { showEditor(i); };
+      edit.onclick = function (e) { e.stopPropagation(); showEditor(i); };
       row.appendChild(edit);
-
       var del = document.createElement('button');
-      del.className = 'mini'; del.textContent = 'Delete';
-      del.onclick = function () {
+      del.className = 'mini'; del.textContent = 'Del';
+      del.onclick = function (e) {
+        e.stopPropagation();
         userMods.splice(i, 1); saveUserMods(); needsReload = true; renderMenu();
       };
       row.appendChild(del);
-
       var sw = document.createElement('button');
       sw.className = 'sw' + (m.on ? ' on' : '');
       sw.innerHTML = '<i></i>';
-      sw.onclick = function () {
+      sw.onclick = function (e) {
+        e.stopPropagation();
         m.on = !m.on; saveUserMods(); needsReload = true;
         if (m.on) runUserMod(m);
         renderMenu();
       };
       row.appendChild(sw);
       box.appendChild(row);
-
       if (m.error) {
         var err = document.createElement('div');
         err.className = 'err';
@@ -840,7 +1031,7 @@
 
   function showEditor(index) {
     view = 'editor';
-    var editing = index != null ? userMods[index] : { name: '', code: '', on: true };
+    var editing = index != null ? userMods[index] : { name: '', code: '' };
     var body = $('#body');
     body.innerHTML = '';
 
@@ -849,29 +1040,23 @@
     body.appendChild(name);
 
     var code = document.createElement('textarea');
-    code.placeholder = '// example\ncc.log("hello from my mod");\ncc.overlay("<b>my mod is on</b>");';
+    code.placeholder = "cc.log('hello');\ncc.overlay('<b>my mod is on</b>');";
     code.value = editing.code;
     body.appendChild(code);
 
     var row = document.createElement('div');
     row.className = 'row';
-
     var saveBtn = document.createElement('button');
     saveBtn.className = 'mini'; saveBtn.textContent = 'Save';
     saveBtn.onclick = function () {
-      var m = { id: 'u' + Date.now(), name: name.value.trim() || 'Untitled mod', code: code.value, on: true };
-      if (index != null) { userMods[index].name = m.name; userMods[index].code = m.code; }
-      else userMods.push(m);
-      saveUserMods();
-      needsReload = true;
-      tab = 'user';
-      view = 'list';
-      renderMenu();
+      var rec = { id: 'u' + Date.now(), name: name.value.trim() || 'Untitled mod', code: code.value, on: true };
+      if (index != null) { userMods[index].name = rec.name; userMods[index].code = rec.code; }
+      else userMods.push(rec);
+      saveUserMods(); needsReload = true; tab = 'user'; view = 'list'; renderMenu();
     };
     row.appendChild(saveBtn);
-
     var fileBtn = document.createElement('button');
-    fileBtn.className = 'mini'; fileBtn.textContent = 'Load .js file';
+    fileBtn.className = 'mini'; fileBtn.textContent = 'Load .js';
     fileBtn.onclick = function () {
       var inp = document.createElement('input');
       inp.type = 'file'; inp.accept = '.js,text/javascript';
@@ -886,36 +1071,32 @@
       inp.click();
     };
     row.appendChild(fileBtn);
-
     var cancel = document.createElement('button');
     cancel.className = 'mini'; cancel.textContent = 'Cancel';
     cancel.onclick = function () { tab = 'user'; view = 'list'; renderMenu(); };
     row.appendChild(cancel);
-
     body.appendChild(row);
   }
 
-  /* --- buttons ---------------------------------------------------------- */
+  /* ------------------------------ buttons ------------------------------- */
 
   $('#open').onclick = function (e) { e.stopPropagation(); toggle(); };
+  $('#storebtn').onclick = function () { openStore(); };
   $('#reload').onclick = function () { location.reload(); };
   $('#turbo').onclick = function () {
-    setMod('renderscale', true);
-    setSetting('renderscale', 'scale', 50);
-    setMod('videotweaks', true);
-    setSetting('videotweaks', 'preset', 'potato');
+    setMod('renderscale', true); setSetting('renderscale', 'scale', 50);
+    setMod('videotweaks', true); setSetting('videotweaks', 'preset', 'potato');
     setMod('noanim', true);
     setMod('fpslimit', true);
     needsReload = true;
     renderMenu();
   };
   $('#reset').onclick = function () {
-    cfg = { mods: {} };
+    cfg = { mods: {}, installed: { eaglersodium: true } };
     mods.forEach(function (m) { cfg.mods[m.id] = { on: !!m.def, s: {} }; });
     saveCfg();
     mods.forEach(applyMod);
-    needsReload = true;
-    view = 'list';
+    needsReload = true; view = 'list';
     renderMenu();
   };
 
@@ -923,21 +1104,119 @@
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
       e.preventDefault(); e.stopPropagation(); toggle();
     }
+    if (e.ctrlKey && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
+      e.preventDefault(); e.stopPropagation(); openStore();
+    }
   }, true);
 
-  /* --- frame loop: fps readout + user hooks ------------------------------ */
+  /* =================== gameplay mods: live machinery ==================== */
+
+  var zoomHeld = false;
+  function zoomApply() {
+    var c = findCanvas();
+    if (!c) return;
+    if (zoomHeld && isOn('zoom')) {
+      var p = settingsOf(modById('zoom')).power || 2;
+      c.style.transform = 'scale(' + p + ')';
+      c.style.transformOrigin = '50% 50%';
+    } else {
+      c.style.transform = '';
+    }
+  }
+
+  var tntUntil = 0;
+  function tntStart() {
+    tntUntil = performance.now() + 4000;
+    tntEl.style.display = 'block';
+  }
+
+  // Hitboxes: replay the game's own F3+B chord as synthetic key events.
+  function pressHitboxes() {
+    var c = findCanvas();
+    var targets = [window, document];
+    if (c) targets.unshift(c);
+    function kev(type, code, key, keyCode) {
+      targets.forEach(function (t) {
+        var e = new KeyboardEvent(type, { code: code, key: key, keyCode: keyCode, which: keyCode, bubbles: true, cancelable: true });
+        try { Object.defineProperty(e, 'keyCode', { value: keyCode }); } catch (x) {}
+        try { Object.defineProperty(e, 'which', { value: keyCode }); } catch (x) {}
+        try { t.dispatchEvent(e); } catch (x) {}
+      });
+    }
+    kev('keydown', 'F3', 'F3', 114);
+    setTimeout(function () {
+      kev('keydown', 'KeyB', 'b', 66);
+      setTimeout(function () {
+        kev('keyup', 'KeyB', 'b', 66);
+        kev('keyup', 'F3', 'F3', 114);
+      }, 80);
+    }, 80);
+  }
+
+  var keyEls = {};
+  root.querySelectorAll('.k').forEach(function (el) { keyEls[el.getAttribute('data-k')] = el; });
+  function markKey(code, down) {
+    var el = keyEls[code];
+    if (el) el.classList.toggle('down', down);
+  }
+  window.addEventListener('keydown', function (e) {
+    if (isOn('zoom') && e.code === settingsOf(modById('zoom')).key) { zoomHeld = true; zoomApply(); }
+    if (isOn('tnttimer') && e.code === settingsOf(modById('tnttimer')).key) tntStart();
+    markKey(e.code, true);
+  }, true);
+  window.addEventListener('keyup', function (e) {
+    if (e.code === settingsOf(modById('zoom')).key) { zoomHeld = false; zoomApply(); }
+    markKey(e.code, false);
+  }, true);
+
+  var clicksL = [], clicksR = [];
+  window.addEventListener('mousedown', function (e) {
+    markKey('M' + e.button, true);
+    if (e.button === 0) clicksL.push(performance.now());
+    if (e.button === 2) clicksR.push(performance.now());
+  }, true);
+  window.addEventListener('mouseup', function (e) { markKey('M' + e.button, false); }, true);
+
+  /* ------------------------- frame loop --------------------------------- */
+
   var frames = 0, last = performance.now(), fps = 0;
+  var dynLast = performance.now();
   (function tick() {
     frames++;
     var now = performance.now();
+
+    if (tntUntil) {
+      var leftMs = tntUntil - now;
+      if (leftMs <= 0) { tntUntil = 0; tntEl.style.display = 'none'; }
+      else tntEl.textContent = '🧨 ' + (leftMs / 1000).toFixed(1);
+    }
+
     if (now - last >= 500) {
       fps = Math.round(frames * 1000 / (now - last));
       frames = 0; last = now;
+
       if (isOn('perfhud')) {
         var c = findCanvas();
         hudEl.innerHTML = fps + ' fps' + (c ? '<br>' + c.width + '×' + c.height : '');
       }
+      if (isOn('cps')) {
+        var cut = now - 1000;
+        clicksL = clicksL.filter(function (t) { return t > cut; });
+        clicksR = clicksR.filter(function (t) { return t > cut; });
+        cpsEl.textContent = clicksL.length + ' | ' + clicksR.length + ' cps';
+      }
       if (open) refreshStat();
+
+      // Sodiumish: nudge the scale toward the target fps, once per second.
+      if (sodiumishOn && armed && !document.hidden && now - dynLast > 1000) {
+        dynLast = now;
+        var so = settingsOf(modById('sodiumish'));
+        var target = Number(so.target) || 45;
+        var floor = (so.floor || 35) / 100;
+        if (fps < target - 4 && dynScale > floor) dynScale = Math.max(floor, dynScale - 0.07);
+        else if (fps > target + 8 && dynScale < 1) dynScale = Math.min(1, dynScale + 0.04);
+        if (Math.abs(dynScale - scale) > 0.01) setScaleNow(dynScale);
+      }
     }
     for (var i = 0; i < frameHooks.length; i++) {
       try { frameHooks[i](fps); } catch (e) { frameHooks.splice(i--, 1); }
@@ -945,9 +1224,7 @@
     requestAnimationFrame(tick);
   })();
 
-  /* =================================================================== *
-   * boot
-   * =================================================================== */
+  /* ============================== boot ================================== */
 
   function ensureMounted() {
     if (document.body && !host.isConnected) document.body.appendChild(host);
@@ -963,12 +1240,8 @@
     }
   }, 1000);
 
-  // Apply every enabled mod. Options-based ones need the file to exist, so on a
-  // brand new profile we wait a few seconds for the game to write one, then
-  // seed a minimal one ourselves and apply on top of that.
   function applyAll() { mods.forEach(applyMod); }
-
-  applyAll();            // page-level mods (scale, overlay, countdown) start now
+  applyAll();
 
   var waited = 0, seeded = false;
   (function waitForOptions() {
@@ -980,8 +1253,7 @@
         if (!optionsKey()) localStorage.setItem('_eaglymc.g', b64);
       }).catch(function () {});
     }
-    if (waited < 45) { setTimeout(waitForOptions, 1200); return; }
-    applyAll();                              // page-level mods still work
+    if (waited < 45) setTimeout(waitForOptions, 1200);
   })();
 
   userMods.forEach(runUserMod);
@@ -989,12 +1261,15 @@
   window.CloudClient = {
     version: VERSION,
     toggle: toggle,
+    openStore: openStore,
     mods: mods,
+    store: STORE,
     api: api,
+    pressHitboxes: pressHitboxes,
     register: function (m) { register(m); applyMod(m); renderMenu(); },
     get fps() { return fps; }
   };
 
-  console.log('%c[CloudClient] ' + VERSION + ' ready - Ctrl+Shift+C or the cloud button',
+  console.log('%c[CloudClient] ' + VERSION + ' ready — ☁ button, Ctrl+Shift+C (panel), Ctrl+Shift+M (mods)',
               'color:#7dd3fc');
 })();
