@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '2.1.0';
+  var VERSION = '2.2.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -126,6 +126,7 @@
   function setGameOptions(over) { return updateGameOptions(function () { return over; }); }
 
   function writeGameOptions(over) {
+    if (!over || !Object.keys(over).length) return Promise.resolve(true);
     if (typeof CompressionStream === 'undefined') return Promise.resolve(false);
     var key = optionsKey();
     var read = key ? gunzip(localStorage.getItem(key)) : Promise.resolve('');
@@ -368,11 +369,49 @@
     apply: function (on) { sodiumishOn = on; if (!on) applyMod(modById('renderscale')); }
   });
 
+  var fbActive = false;
+
   register({
-    id: 'fullbright', name: 'Fullbright', cat: 'play', def: false, reload: true, storeOnly: 'fullbright',
-    desc: 'Turns the brightness far past maximum so caves are lit like daytime. Uses the game\'s own gamma setting.',
-    apply: function (on) { setGameOptions({ gamma: on ? '100.0' : '1.0' }); }
+    id: 'fullbright', name: 'Fullbright', cat: 'play', def: false, storeOnly: 'fullbright',
+    desc: 'Press the key to light caves like daytime, instantly - a gamma filter over the game\'s picture, no restart needed. Press again to go back.',
+    settings: [
+      { id: 'key', type: 'select', label: 'Toggle key', def: 'KeyF', options: [
+        { v: 'KeyF', label: 'F' }, { v: 'KeyG', label: 'G' }, { v: 'KeyH', label: 'H' } ] },
+      { id: 'strength', type: 'slider', label: 'Strength', min: 1, max: 3, step: 1, def: 2, unit: '' }
+    ],
+    apply: function (on) {
+      if (!on) { fbActive = false; }
+      fbApply();
+      // Old versions set the game's own gamma to 100 (restart-based). Put it
+      // back once, so this filter is the only thing controlling brightness.
+      updateGameOptions(function (cur) {
+        return cur.gamma === '100.0' ? { gamma: '1.0' } : {};
+      });
+    }
   });
+
+  function fbApply() {
+    var c = findCanvas();
+    if (!c) return;
+    if (fbActive && isOn('fullbright')) {
+      var st = settingsOf(modById('fullbright')).strength || 2;
+      var exp = { 1: 0.55, 2: 0.42, 3: 0.3 }[st] || 0.42;
+      var svg = document.getElementById('ccgamma-svg');
+      if (svg) {
+        svg.querySelectorAll('feFuncR,feFuncG,feFuncB').forEach(function (f) {
+          f.setAttribute('exponent', exp);
+        });
+        c.style.filter = 'url(#ccgamma)';
+      } else c.style.filter = 'brightness(1.8)';         // fallback, greyer
+    } else if (c.style.filter) {
+      c.style.filter = '';
+    }
+  }
+  function fbToggle() {
+    fbActive = !fbActive;
+    fbApply();
+    toast(fbActive ? '\uD83D\uDD06 Fullbright ON' : 'Fullbright off');
+  }
 
   register({
     id: 'zoom', name: 'Zoom', cat: 'play', def: false, storeOnly: 'zoom',
@@ -508,7 +547,7 @@
         setMod('fpslimit', true); setSetting('fpslimit', 'max', '60');
       } },
     { id: 'fullbright', icon: '🔆', name: 'Fullbright', by: 'CloudClient', tag: 'gameplay',
-      desc: 'Caves lit like noon. Sets the game\'s gamma way past maximum. Needs a restart to kick in.',
+      desc: 'Caves lit like noon, instantly. Press F in game to switch it on and off - no restart.',
       mods: ['fullbright'] },
     { id: 'zoom', icon: '🔍', name: 'Zoom', by: 'CloudClient', tag: 'gameplay',
       desc: 'Hold C to zoom, like OptiFine. Pick the key and the power in the panel.',
@@ -587,6 +626,10 @@
     '  color:#7dd3fc;text-shadow:0 1px 3px #000;pointer-events:none}',
     '.tnt{position:fixed;top:18%;left:50%;transform:translateX(-50%);display:none;',
     '  font:700 34px ui-monospace,monospace;color:#f87171;text-shadow:0 2px 8px #000;pointer-events:none}',
+    '.toast{position:fixed;bottom:76px;left:50%;transform:translate(-50%,8px);opacity:0;pointer-events:none;',
+    '  background:rgba(13,17,23,.92);color:#e6edf3;font:600 13px system-ui;padding:8px 16px;border-radius:20px;',
+    '  border:1px solid rgba(125,211,252,.3);transition:opacity .2s,transform .2s}',
+    '.toast.on{opacity:1;transform:translate(-50%,0)}',
     '.home{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;',
     '  gap:14px;background:radial-gradient(1000px 500px at 50% -10%,#123047 0%,#0b1017 55%,#07090d 100%);z-index:5;',
     '  animation:ccfade .4s ease}',
@@ -734,6 +777,7 @@
     '</div>',
     '<div class="cps" id="cpsbox"></div>',
     '<div class="tnt" id="tnt"></div>',
+    '<div class="toast" id="toast"></div>',
     '<button class="pill" id="pill" title="Mod store (Ctrl+Shift+M)">&#128230; Mods</button>',
     '<button class="btn" id="open" title="CloudClient (Ctrl+Shift+C)">&#9729;</button>',
     '<div class="panel" id="panel">',
@@ -756,7 +800,7 @@
   function $(sel) { return root.querySelector(sel); }
 
   var panel = $('#panel'), hudEl = $('#hud'), markEl = $('.mark');
-  var keysEl = $('#keys'), cpsEl = $('#cpsbox'), tntEl = $('#tnt');
+  var keysEl = $('#keys'), cpsEl = $('#cpsbox'), tntEl = $('#tnt'), toastEl = $('#toast');
   var open = false, tab = 'perf', view = 'list', expanded = {};
 
   /* ------------------------------ home -------------------------------- */
@@ -985,6 +1029,48 @@
   }
 
   function renderUserTab(body) {
+    // First: everything installed from the store, so "what have I added?" has
+    // one answer. Toggle here, remove from the store card.
+    var installedItems = STORE.filter(function (it) { return cfg.installed[it.id]; });
+    if (installedItems.length) {
+      var head1 = document.createElement('div');
+      head1.className = 'doc';
+      head1.textContent = 'From the mod store:';
+      body.appendChild(head1);
+      installedItems.forEach(function (it) {
+        var box = document.createElement('div');
+        var itemOn = (it.mods || []).some(isOn) || !it.mods.length;
+        box.className = 'mod' + (itemOn ? ' on' : '');
+        var row = document.createElement('div');
+        row.className = 'mrow';
+        row.innerHTML = '<div class="mname">' + it.icon + ' ' + esc(it.name) + '</div>';
+        if (it.mods && it.mods.length) {
+          var sw = document.createElement('button');
+          sw.className = 'sw' + (itemOn ? ' on' : '');
+          sw.innerHTML = '<i></i>';
+          sw.onclick = function (e) {
+            e.stopPropagation();
+            var turnOn = !itemOn;
+            it.mods.forEach(function (id) { setMod(id, turnOn); });
+          };
+          row.appendChild(sw);
+        } else {
+          var tagEl = document.createElement('span');
+          tagEl.className = 'hint';
+          tagEl.textContent = 'settings pack';
+          row.appendChild(tagEl);
+        }
+        row.onclick = function () { openStore(); };
+        box.appendChild(row);
+        body.appendChild(box);
+      });
+    }
+
+    var head2 = document.createElement('div');
+    head2.className = 'doc';
+    head2.textContent = 'Written by you:';
+    body.appendChild(head2);
+
     var doc = document.createElement('div');
     doc.className = 'doc';
     doc.innerHTML = 'A mod is JavaScript that runs at launch, with a helper <code>cc</code>: ' +
@@ -1145,6 +1231,14 @@
     }
   }
 
+  var toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('on'); }, 1400);
+  }
+
   var tntUntil = 0;
   function tntStart() {
     tntUntil = performance.now() + 4000;
@@ -1183,6 +1277,11 @@
   window.addEventListener('keydown', function (e) {
     if (isOn('zoom') && e.code === settingsOf(modById('zoom')).key) { zoomHeld = true; zoomApply(); }
     if (isOn('tnttimer') && e.code === settingsOf(modById('tnttimer')).key) tntStart();
+    if (isOn('fullbright') && !e.repeat && e.code === settingsOf(modById('fullbright')).key) {
+      // don't steal the key while typing in our own editor
+      var a = root.activeElement;
+      if (!a || (a.tagName !== 'TEXTAREA' && a.tagName !== 'INPUT')) fbToggle();
+    }
     markKey(e.code, true);
   }, true);
   window.addEventListener('keyup', function (e) {
@@ -1247,12 +1346,31 @@
 
   /* ============================== boot ================================== */
 
+  // True gamma needs an SVG filter; CSS brightness() can't lift dark pixels
+  // without washing everything grey. url(#id) only resolves inside the same
+  // tree as the canvas, so this lives in the document, not our shadow root.
+  var fbSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  fbSvg.setAttribute('id', 'ccgamma-svg');
+  fbSvg.setAttribute('width', '0');
+  fbSvg.setAttribute('height', '0');
+  fbSvg.style.position = 'absolute';
+  fbSvg.innerHTML = '<filter id="ccgamma" color-interpolation-filters="sRGB">' +
+    '<feComponentTransfer>' +
+    '<feFuncR type="gamma" exponent="0.42" amplitude="1" offset="0"/>' +
+    '<feFuncG type="gamma" exponent="0.42" amplitude="1" offset="0"/>' +
+    '<feFuncB type="gamma" exponent="0.42" amplitude="1" offset="0"/>' +
+    '</feComponentTransfer></filter>';
+
   var HOST_CSS = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647';
   function ensureMounted() {
     // The game rebuilds <body> while booting; it can sweep our host into its
     // own wrapper AND stamp new inline styles on it (seen: z-index 2,
     // position absolute). Re-assert both the parent and the style.
     if (document.body && host.parentNode !== document.body) document.body.appendChild(host);
+    if (document.body && fbSvg.parentNode !== document.body) {
+      document.body.appendChild(fbSvg);
+      fbApply();                       // re-point the canvas at the filter
+    }
     if (host.style.zIndex !== '2147483647' || host.style.position !== 'fixed') {
       host.style.cssText = HOST_CSS;
     }
