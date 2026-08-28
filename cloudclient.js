@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '2.0.2';
+  var VERSION = '2.1.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -565,6 +565,11 @@
     '@keyframes ccdrift{0%{background-position:0 0}100%{background-position:480px 480px}}',
     '@keyframes ccspin{to{transform:rotate(360deg)}}',
     '@keyframes ccpulse{0%,100%{transform:scale(1)}50%{transform:scale(1.045)}}',
+    '.pill{position:fixed;bottom:8px;right:52px;height:38px;border:0;border-radius:10px;padding:0 14px;',
+    '  background:rgba(13,17,23,.78);color:#7dd3fc;font:600 13px system-ui;cursor:pointer;',
+    '  box-shadow:0 2px 10px rgba(0,0,0,.5);transition:transform .12s ease,background .12s}',
+    '.pill:hover{background:rgba(13,17,23,.96);transform:scale(1.05)}',
+    '.hidewhilelocked.locked{display:none}',
     '.btn{position:fixed;bottom:8px;right:8px;width:38px;height:38px;border:0;border-radius:10px;',
     '  background:rgba(13,17,23,.78);color:#7dd3fc;font-size:18px;line-height:38px;text-align:center;',
     '  cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.5);padding:0;transition:transform .12s ease,background .12s}',
@@ -638,11 +643,12 @@
     '.sun:hover{color:#f87171;border-color:#f87171}',
     '.sdone-row{display:flex;gap:8px;align-items:center}',
     '.sbadge{font:700 12px system-ui;color:#3fb950}',
-    '.panel{position:fixed;right:8px;bottom:52px;width:320px;max-height:calc(100vh - 62px);display:none;',
-    '  flex-direction:column;border-radius:14px;overflow:hidden;background:rgba(13,17,23,.97);',
-    '  border:1px solid rgba(125,211,252,.18);box-shadow:0 10px 40px rgba(0,0,0,.6);color:#e6edf3;',
-    '  font:13px/1.45 system-ui,sans-serif}',
-    '.panel.on{display:flex;animation:ccpop .18s ease}',
+    '.panel{position:fixed;right:0;top:0;bottom:0;width:min(330px,92vw);display:flex;',
+    '  flex-direction:column;border-radius:14px 0 0 14px;overflow:hidden;background:rgba(13,17,23,.97);',
+    '  border:1px solid rgba(125,211,252,.18);border-right:0;box-shadow:-12px 0 40px rgba(0,0,0,.55);',
+    '  color:#e6edf3;font:13px/1.45 system-ui,sans-serif;',
+    '  transform:translateX(105%);transition:transform .28s cubic-bezier(.2,.8,.25,1);pointer-events:none}',
+    '.panel.on{transform:none;pointer-events:auto}',
     '.head{padding:9px 12px 7px;border-bottom:1px solid rgba(255,255,255,.07)}',
     '.head .trow{display:flex;align-items:center;gap:8px}',
     '.head h1{margin:0;font-size:15px;flex:1}',
@@ -728,11 +734,13 @@
     '</div>',
     '<div class="cps" id="cpsbox"></div>',
     '<div class="tnt" id="tnt"></div>',
+    '<button class="pill" id="pill" title="Mod store (Ctrl+Shift+M)">&#128230; Mods</button>',
     '<button class="btn" id="open" title="CloudClient (Ctrl+Shift+C)">&#9729;</button>',
     '<div class="panel" id="panel">',
     '  <div class="head">',
     '    <div class="trow"><h1>&#9729; <b>CloudClient</b></h1>',
-    '      <button class="storebtn" id="storebtn">&#128230; Mods</button></div>',
+    '      <button class="storebtn" id="storebtn">&#128230; Mods</button>',
+    '      <button class="sx" id="closeside" title="Close">&#10005;</button></div>',
     '    <div class="sub" id="stat">&nbsp;</div>',
     '    <button class="turbo" id="turbo">&#9889; TURBO</button>',
     '  </div>',
@@ -1081,7 +1089,20 @@
   /* ------------------------------ buttons ------------------------------- */
 
   $('#open').onclick = function (e) { e.stopPropagation(); toggle(); };
+  $('#pill').onclick = function (e) { e.stopPropagation(); openStore(); };
+  $('#closeside').onclick = function () { toggle(false); };
   $('#storebtn').onclick = function () { openStore(); };
+
+  // While the game has the mouse captured you can't click buttons anyway, so
+  // get them out of the way; they come back the moment a menu opens.
+  ['#pill', '#open'].forEach(function (sel) { $(sel).classList.add('hidewhilelocked'); });
+  document.addEventListener('pointerlockchange', function () {
+    var locked = !!document.pointerLockElement;
+    root.querySelectorAll('.hidewhilelocked').forEach(function (el) {
+      el.classList.toggle('locked', locked);
+    });
+    markEl.style.opacity = locked ? .55 : 1;
+  });
   $('#reload').onclick = function () { location.reload(); };
   $('#turbo').onclick = function () {
     setMod('renderscale', true); setSetting('renderscale', 'scale', 50);
