@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '2.2.1';
+  var VERSION = '2.3.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -370,6 +370,16 @@
   });
 
   var fbActive = false;
+  var fbFilterStr = '';
+
+  // A bare gamma lift makes daytime look like milk - the midtones rise but the
+  // contrast and color don't. Each strength pairs a gamma curve with contrast
+  // and saturation compensation, tuned by eye against the title panorama.
+  var FB_LEVELS = {
+    1: { exp: 0.7, sat: 1.08, con: 1.05 },
+    2: { exp: 0.52, sat: 1.22, con: 1.1 },
+    3: { exp: 0.38, sat: 1.32, con: 1.12 }
+  };
 
   register({
     id: 'fullbright', name: 'Fullbright', cat: 'play', def: false, storeOnly: 'fullbright',
@@ -377,7 +387,10 @@
     settings: [
       { id: 'key', type: 'select', label: 'Toggle key', def: 'KeyF', options: [
         { v: 'KeyF', label: 'F' }, { v: 'KeyG', label: 'G' }, { v: 'KeyH', label: 'H' } ] },
-      { id: 'strength', type: 'slider', label: 'Strength', min: 1, max: 3, step: 1, def: 2, unit: '' }
+      { id: 'strength', type: 'select', label: 'Strength', def: '2', options: [
+        { v: '1', label: 'Subtle - a bit brighter' },
+        { v: '2', label: 'Cave vision' },
+        { v: '3', label: 'Maximum' } ] }
     ],
     apply: function (on) {
       if (!on) { fbActive = false; }
@@ -392,20 +405,19 @@
 
   function fbApply() {
     var c = findCanvas();
-    if (!c) return;
     if (fbActive && isOn('fullbright')) {
-      var st = settingsOf(modById('fullbright')).strength || 2;
-      var exp = { 1: 0.55, 2: 0.42, 3: 0.3 }[st] || 0.42;
+      var lv = FB_LEVELS[String(settingsOf(modById('fullbright')).strength || 2)] || FB_LEVELS[2];
       var svg = document.getElementById('ccgamma-svg');
       if (svg) {
         svg.querySelectorAll('feFuncR,feFuncG,feFuncB').forEach(function (f) {
-          f.setAttribute('exponent', exp);
+          f.setAttribute('exponent', lv.exp);
         });
-        c.style.filter = 'url(#ccgamma)';
-      } else c.style.filter = 'brightness(1.8)';         // fallback, greyer
-    } else if (c.style.filter) {
-      c.style.filter = '';
+        fbFilterStr = 'url(#ccgamma) saturate(' + lv.sat + ') contrast(' + lv.con + ')';
+      } else fbFilterStr = 'brightness(1.7) saturate(1.2)';   // fallback
+    } else {
+      fbFilterStr = '';
     }
+    if (c) c.style.filter = fbFilterStr;
   }
   function fbToggle() {
     fbActive = !fbActive;
@@ -1310,10 +1322,8 @@
     // that style have to be pushed back every frame. Cheap: two compares.
     var fc = findCanvas();
     if (fc) {
-      if (fbActive && isOn('fullbright')) {
-        if (fc.style.filter !== 'url("#ccgamma")' && fc.style.filter !== 'url(#ccgamma)') {
-          fc.style.filter = 'url(#ccgamma)';
-        }
+      if (fbFilterStr) {
+        if (!fc.style.filter || fc.style.filter.indexOf('ccgamma') < 0) fc.style.filter = fbFilterStr;
       } else if (fc.style.filter) fc.style.filter = '';
       if (zoomHeld && isOn('zoom')) {
         var zp = 'scale(' + (settingsOf(modById('zoom')).power || 2) + ')';
