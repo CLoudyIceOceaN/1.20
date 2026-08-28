@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '2.2.0';
+  var VERSION = '2.2.1';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -1304,6 +1304,22 @@
   (function tick() {
     frames++;
     var now = performance.now();
+
+    // The game rewrites the canvas's inline style all the time (the same
+    // reason image-rendering needs re-asserting), so effects that live on
+    // that style have to be pushed back every frame. Cheap: two compares.
+    var fc = findCanvas();
+    if (fc) {
+      if (fbActive && isOn('fullbright')) {
+        if (fc.style.filter !== 'url("#ccgamma")' && fc.style.filter !== 'url(#ccgamma)') {
+          fc.style.filter = 'url(#ccgamma)';
+        }
+      } else if (fc.style.filter) fc.style.filter = '';
+      if (zoomHeld && isOn('zoom')) {
+        var zp = 'scale(' + (settingsOf(modById('zoom')).power || 2) + ')';
+        if (fc.style.transform !== zp) { fc.style.transform = zp; fc.style.transformOrigin = '50% 50%'; }
+      } else if (fc.style.transform) fc.style.transform = '';
+    }
 
     if (tntUntil) {
       var leftMs = tntUntil - now;
