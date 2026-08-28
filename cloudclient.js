@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '2.0.0';
+  var VERSION = '2.0.1';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -1227,7 +1227,10 @@
   /* ============================== boot ================================== */
 
   function ensureMounted() {
-    if (document.body && !host.isConnected) document.body.appendChild(host);
+    // The game rebuilds <body> while booting and can sweep our host INTO its
+    // own wrapper div, where it is clipped and buried. "Connected" is not
+    // enough - the host must be a direct child of the current body.
+    if (document.body && host.parentNode !== document.body) document.body.appendChild(host);
   }
   ensureMounted();
   setInterval(function () {
