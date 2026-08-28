@@ -1,25 +1,64 @@
-# 1.20
+# CloudClient
 
-EaglercraftX 1.20 (EaglyMC 1.20-u7 WASM-GC), with **EaglerSodium** baked in.
+EaglercraftX 1.20 (EaglyMC 1.20-u7 WASM-GC) with **CloudClient** built in.
 
-Play: https://cloudyiceocean.github.io/1.20/
+**Play: https://cloudyiceocean.github.io/1.20/**
 
-The only change to `index.html` is one `<script src="eaglersodium.js">` line at
-the top of `<head>`. Delete it for the stock client.
+Press the cloud button in the bottom-right corner (or Ctrl+Shift+C) for the mod
+menu: toggle mods, change their settings, and add your own.
 
-## What EaglerSodium does
+## What's in it
 
-* **Render scale** - the game normally draws your screen times the display's
-  pixel ratio. The mod reports a smaller ratio, so the game draws fewer pixels
-  and the browser stretches the picture back out. 60% scale is ~2.8x fewer
-  pixels to draw; that is the biggest FPS win available in a browser.
-* **Fast settings** - rewrites the slow video options (render distance,
-  mipmaps, particles, entity shadows, clouds, connected textures, FXAA) in
-  localStorage before the game boots. Keybinds, skin and sound are untouched.
-* **Skips the launch countdown.**
+The game is one compiled WASM blob with no mod loader, so nothing can be
+patched inside it. CloudClient works through the four doors the client does
+leave open, and every mod is one of these:
 
-Open the panel with the small lightning button in the corner, or Ctrl+Shift+P:
-resolution slider, Fast/Potato presets, and a reset.
+| door | what it buys |
+| --- | --- |
+| `window.devicePixelRatio` | render scale - how many pixels the game draws |
+| `localStorage["_eaglymc.g"]` | the game's own video and HUD options |
+| IndexedDB `resourcePacks` | installing and selecting resource packs |
+| the page around the canvas | overlays, wake lock, tab title |
 
-Companion resource pack (freezes animated textures):
-https://cloudyiceocean.github.io/modinth/resourcepack/eaglersodium
+**Performance:** Render Scale (live slider - 60% is about a third of the pixels
+of full resolution), Fast Video Settings (Balanced / Fast / Potato presets plus
+a render-distance slider), Freeze Animated Textures (installs a tiny pack that
+gives water, lava, fire and portals a single frame, so the game stops
+re-uploading them every frame), Frame Limit.
+
+**Look & HUD:** the game's own FPS / coordinate readouts, a CloudClient
+overlay, the watermark.
+
+**Extras:** skip the launch countdown, keep the screen awake, rename the tab.
+
+**TURBO** in the menu switches on everything that helps at once: 50% render
+scale, Potato settings, frozen animations, 60 fps cap.
+
+## Adding your own mods
+
+Mod menu -> *My Mods* -> **+ Add a mod**. A mod is JavaScript that runs when
+the game starts, and gets a helper object `cc`:
+
+```js
+cc.log('hello');                      // console
+cc.canvas();                          // the game's <canvas>
+cc.setRenderScale(50);                // percent
+cc.setOptions({ renderDistance: '2' });  // the game's options (applies next launch)
+cc.getOptions().then(o => cc.log(o.renderDistance));
+cc.overlay('<b>on screen</b>');       // corner overlay
+cc.onFrame(fps => { ... });           // every animation frame
+```
+
+Mods are saved in your browser and run on every launch. They can be edited,
+switched off, or deleted from the same menu.
+
+## Rebuilding
+
+`index.html` is the stock client plus one line after `<head>`:
+
+```html
+<script src="cloudclient.js"></script>
+```
+
+Delete that line for the unmodified client. Source of the mod client and its
+build scripts: `~/Documents/Claude/EaglerSodium/cloudclient.js`.
