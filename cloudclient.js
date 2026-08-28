@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '2.0.1';
+  var VERSION = '2.0.2';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -1226,11 +1226,15 @@
 
   /* ============================== boot ================================== */
 
+  var HOST_CSS = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647';
   function ensureMounted() {
-    // The game rebuilds <body> while booting and can sweep our host INTO its
-    // own wrapper div, where it is clipped and buried. "Connected" is not
-    // enough - the host must be a direct child of the current body.
+    // The game rebuilds <body> while booting; it can sweep our host into its
+    // own wrapper AND stamp new inline styles on it (seen: z-index 2,
+    // position absolute). Re-assert both the parent and the style.
     if (document.body && host.parentNode !== document.body) document.body.appendChild(host);
+    if (host.style.zIndex !== '2147483647' || host.style.position !== 'fixed') {
+      host.style.cssText = HOST_CSS;
+    }
   }
   ensureMounted();
   setInterval(function () {
