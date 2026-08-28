@@ -1,5 +1,5 @@
 /*!
- * CloudClient 1.0 - a mod client for EaglercraftX in the browser
+ * CloudClient 1.0.1 - a mod client for EaglercraftX in the browser
  * Built for a laggy school Chromebook. github.com/CLoudyIceOceaN/1.20
  *
  * The game itself is one compiled WASM blob with no mod loader, so nothing can
@@ -20,7 +20,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '1.0';
+  var VERSION = '1.0.1';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
