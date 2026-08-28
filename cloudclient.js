@@ -121,8 +121,27 @@
       .then(function (buf) { return bytesToB64(new Uint8Array(buf)); });
   }
 
+  // Several mods write options at once on boot. Each write is a
+  // read-modify-write on one localStorage key, so without a queue they read the
+  // same starting file and the last one to finish wipes the others' changes -
+  // measured: 2 of 15 settings survived. Everything goes through this chain.
+  var optQueue = Promise.resolve();
+
+  /** update(currentOptions) -> {key: value} overrides. Applies next boot. */
+  function updateGameOptions(update) {
+    optQueue = optQueue
+      .then(function () { return getGameOptions(); })
+      .then(function (current) { return writeGameOptions(update(current) || {}); })
+      .catch(function (e) { console.warn('[CloudClient] options update failed', e); });
+    return optQueue;
+  }
+
   /** Merge {key: value} into the game's options file. Takes effect next boot. */
   function setGameOptions(over) {
+    return updateGameOptions(function () { return over; });
+  }
+
+  function writeGameOptions(over) {
     if (typeof CompressionStream === 'undefined') return Promise.resolve(false);
     var key = optionsKey();
     var read = key ? gunzip(localStorage.getItem(key)) : Promise.resolve('');
@@ -174,23 +193,28 @@
     'calibrated_sculk_sensor_input_side', 'crimson_stem', 'warped_stem', 'lantern',
     'soul_lantern', 'sea_pickle'];
 
-  /** Open the pack filesystem, but ONLY if the game already made it - opening a
-   *  database that doesn't exist would create an empty one and break the game. */
+  /** Open the pack filesystem, creating it with the game's own schema if this
+   *  profile has never opened the resource pack screen. Version 1 with a single
+   *  "filesystem" store keyed on ["path"] is exactly what the client makes, so
+   *  it opens ours without noticing the difference. */
   function openPackDB() {
-    if (!indexedDB.databases) return Promise.resolve(null);
-    return indexedDB.databases().then(function (list) {
-      var found = list.some(function (db) { return db.name === PACK_DB; });
-      if (!found) return null;
-      return new Promise(function (res) {
-        var q = indexedDB.open(PACK_DB);
-        q.onsuccess = function () {
-          var db = q.result;
-          if (!db.objectStoreNames.contains('filesystem')) { db.close(); res(null); return; }
-          res(db);
-        };
-        q.onerror = function () { res(null); };
-      });
-    }).catch(function () { return null; });
+    return new Promise(function (res) {
+      var q;
+      try { q = indexedDB.open(PACK_DB, 1); } catch (e) { res(null); return; }
+      q.onupgradeneeded = function () {
+        var db = q.result;
+        if (!db.objectStoreNames.contains('filesystem')) {
+          db.createObjectStore('filesystem', { keyPath: ['path'] });
+        }
+      };
+      q.onsuccess = function () {
+        var db = q.result;
+        if (!db.objectStoreNames.contains('filesystem')) { db.close(); res(null); return; }
+        res(db);
+      };
+      q.onerror = function () { res(null); };
+      q.onblocked = function () { res(null); };
+    });
   }
 
   function installNoAnimPack() {
@@ -234,12 +258,12 @@
 
   /** Add/remove our pack from the game's selected list. */
   function selectPack(on) {
-    return getGameOptions().then(function (opts) {
+    return updateGameOptions(function (opts) {
       var list = [];
       try { list = JSON.parse(opts.resourcePacks || '[]'); } catch (e) {}
       list = list.filter(function (n) { return n !== PACK_NAME; });
       if (on) list.push(PACK_NAME);
-      return setGameOptions({ resourcePacks: JSON.stringify(list) });
+      return { resourcePacks: JSON.stringify(list) };
     });
   }
 
@@ -534,24 +558,24 @@
     '  text-shadow:0 1px 3px #000;pointer-events:none;letter-spacing:.3px}',
     '.hud{position:fixed;left:8px;top:6px;font:600 12px/1.5 ui-monospace,monospace;color:#7dd3fc;',
     '  text-shadow:0 1px 3px #000;pointer-events:none;display:none}',
-    '.panel{position:fixed;right:8px;bottom:52px;width:330px;max-height:calc(100vh - 70px);',
+    '.panel{position:fixed;right:8px;bottom:52px;width:330px;max-height:calc(100vh - 62px);',
     '  display:none;flex-direction:column;border-radius:14px;overflow:hidden;',
     '  background:rgba(13,17,23,.97);border:1px solid rgba(125,211,252,.18);',
     '  box-shadow:0 10px 40px rgba(0,0,0,.6);color:#e6edf3;font:13px/1.45 system-ui,sans-serif}',
     '.panel.on{display:flex}',
-    '.head{padding:12px 14px 10px;border-bottom:1px solid rgba(255,255,255,.07)}',
+    '.head{padding:10px 12px 8px;border-bottom:1px solid rgba(255,255,255,.07)}',
     '.head h1{margin:0;font-size:16px;letter-spacing:.2px}',
     '.head h1 b{color:#7dd3fc}',
     '.head .sub{font-size:11px;color:#8b949e;margin-top:2px}',
-    '.turbo{display:block;width:100%;margin-top:10px;padding:9px 0;border:0;border-radius:9px;',
+    '.turbo{display:block;width:100%;margin-top:8px;padding:7px 0;border:0;border-radius:9px;',
     '  background:linear-gradient(90deg,#0ea5e9,#38bdf8);color:#04202e;font:700 13px system-ui;cursor:pointer}',
     '.turbo:hover{filter:brightness(1.08)}',
     '.tabs{display:flex;gap:4px;padding:8px 10px 0}',
     '.tab{flex:1;padding:6px 0;border:0;border-radius:8px 8px 0 0;background:transparent;color:#8b949e;',
     '  font:600 11px system-ui;cursor:pointer}',
     '.tab.sel{background:rgba(125,211,252,.12);color:#7dd3fc}',
-    '.body{overflow-y:auto;padding:8px 10px 12px;flex:1}',
-    '.mod{border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:9px 10px;margin-bottom:7px;',
+    '.body{overflow-y:auto;padding:8px 10px 12px;flex:1;min-height:110px}',
+    '.mod{border:1px solid rgba(255,255,255,.07);border-radius:10px;padding:8px 9px;margin-bottom:6px;',
     '  background:rgba(255,255,255,.02)}',
     '.mod.on{border-color:rgba(125,211,252,.35);background:rgba(125,211,252,.06)}',
     '.row{display:flex;align-items:center;gap:8px}',
@@ -922,6 +946,8 @@
   // brand new profile we wait a few seconds for the game to write one, then
   // seed a minimal one ourselves and apply on top of that.
   function applyAll() { mods.forEach(applyMod); }
+
+  applyAll();            // page-level mods (scale, overlay, countdown) start now
 
   var waited = 0, seeded = false;
   (function waitForOptions() {
