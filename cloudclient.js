@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.2.1';
+  var VERSION = '3.2.2';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -265,7 +265,10 @@
     return openPackDB().then(function (db) {
       if (!db) return false;
       var enc = new TextEncoder();
-      var empty = enc.encode(JSON.stringify({ elements: [] }));
+      // {"elements":[]} is a BROKEN model to this loader (purple-black
+      // checkers). Inheriting from block/block - which only carries display
+      // transforms, no shapes - is the valid way to render nothing.
+      var empty = enc.encode(JSON.stringify({ parent: 'block/block' }));
       return new Promise(function (res) {
         var tx = db.transaction('filesystem', 'readwrite');
         var os = tx.objectStore('filesystem');
