@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.0.1';
+  var VERSION = '3.1.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -387,7 +387,7 @@
 
   register({
     id: 'fullbright', name: 'Fullbright', cat: 'play', def: false, storeOnly: 'fullbright',
-    desc: 'Press the key to light caves like daytime, instantly - a gamma filter over the game\'s picture, no restart needed. Press again to go back.',
+    desc: 'Caves lit like daytime, instantly. On as soon as you enable it; the key switches it on and off while you play.',
     settings: [
       { id: 'key', type: 'select', label: 'Toggle key', def: 'KeyF', options: [
         { v: 'KeyF', label: 'F' }, { v: 'KeyG', label: 'G' }, { v: 'KeyH', label: 'H' } ] },
@@ -397,7 +397,9 @@
         { v: '3', label: 'Maximum' } ] }
     ],
     apply: function (on) {
-      if (!on) { fbActive = false; }
+      // Enabling the mod IS turning it on - no second key press needed.
+      // The key just toggles it while you play.
+      fbActive = on;
       fbApply();
       // Old versions set the game's own gamma to 100 (restart-based). Put it
       // back once, so this filter is the only thing controlling brightness.
@@ -455,25 +457,43 @@
 
   register({
     id: 'tnttimer', name: 'TNT Countdown', cat: 'play', def: false, storeOnly: 'tnttimer',
-    desc: 'Press the key the moment TNT is lit and a 4-second fuse counts down on screen. (The game doesn\'t let outside code see its TNT, so you start the timer.)',
+    desc: 'A 4-second fuse timer with a BOOM at zero. Press the key the moment the TNT is lit. (The game doesn\'t let outside code see its TNT, so the key is the trigger.)',
     settings: [
       { id: 'key', type: 'select', label: 'Start key', def: 'KeyV', options: [
         { v: 'KeyV', label: 'V' }, { v: 'KeyB', label: 'B' }, { v: 'KeyG', label: 'G' } ] }
     ],
-    apply: function () {}
+    apply: function () {},
+    onToggle: function (on) {
+      if (on) toast('🧨 Press V when the TNT is lit');
+    }
   });
+
+  // The game's hitbox flag can only be flipped from inside a world, and it
+  // resets every time the page loads. We track what we believe the flag is
+  // and push it to match the switch whenever you're actually playing
+  // (= the game has captured the mouse).
+  var hbGameOn = false;
+
+  function hbSync(quiet) {
+    var want = isOn('hitboxes');
+    if (want === hbGameOn) return;
+    if (!document.pointerLockElement) {
+      if (!quiet) toast(want ? '\uD83D\uDCE6 Hitboxes will show when you\'re in a world' : 'Hitboxes off');
+      return;
+    }
+    pressHitboxes();
+    hbGameOn = want;
+    if (!quiet) toast(want ? '\uD83D\uDCE6 Hitboxes ON' : 'Hitboxes off');
+  }
 
   register({
     id: 'hitboxes', name: 'Hitboxes', cat: 'play', def: false, storeOnly: 'hitboxes',
-    desc: 'Boxes around every mob and player - the game\'s own hitbox view. Flip the switch while you\'re in a world.',
+    desc: 'Boxes around every mob and player - the game\'s own hitbox view. Turns itself on the moment you\'re in a world.',
     settings: [
-      { id: 'go', type: 'button', label: 'Press again (if it got out of sync)' }
+      { id: 'go', type: 'button', label: 'Fix it (if boxes are opposite of the switch)' }
     ],
     apply: function () {},
-    onToggle: function (on) {
-      pressHitboxes();
-      toast(on ? '\uD83D\uDCE6 Hitboxes ON' : 'Hitboxes off');
-    }
+    onToggle: function () { hbSync(false); }
   });
 
   /* --------------------------- other built-ins ------------------------ */
@@ -541,6 +561,7 @@
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden && isOn('keepawake') && !wakeLock) requestWakeLock();
   });
+  document.addEventListener('fullscreenchange', function () { ensureMounted(); });
 
   /* ============================== the store ============================ */
 
@@ -1016,7 +1037,9 @@
       var btn = document.createElement('button');
       btn.className = 'setbtn';
       btn.textContent = def.label;
-      btn.onclick = function () { if (m.id === 'hitboxes') pressHitboxes(); };
+      btn.onclick = function () {
+        if (m.id === 'hitboxes') { hbGameOn = !hbGameOn; hbSync(false); }
+      };
       wrap.appendChild(btn);
       return wrap;
     }
@@ -1246,6 +1269,8 @@
       el.classList.toggle('locked', locked);
     });
     markEl.style.opacity = locked ? .55 : 1;
+    // just started (or resumed) playing - make the game match the switches
+    if (locked) setTimeout(function () { hbSync(true); }, 600);
   });
   $('#reload').onclick = function () { location.reload(); };
   $('#turbo').onclick = function () {
@@ -1306,6 +1331,7 @@
   function tntStart() {
     tntUntil = performance.now() + 4000;
     tntEl.style.display = 'block';
+    tntEl.style.color = '#f87171';
   }
 
   // Hitboxes: replay the game's own F3+B chord as synthetic key events.
@@ -1391,8 +1417,12 @@
 
     if (tntUntil) {
       var leftMs = tntUntil - now;
-      if (leftMs <= 0) { tntUntil = 0; tntEl.style.display = 'none'; }
-      else tntEl.textContent = '🧨 ' + (leftMs / 1000).toFixed(1);
+      if (leftMs <= -700) { tntUntil = 0; tntEl.style.display = 'none'; }
+      else if (leftMs <= 0) { tntEl.textContent = '💥 BOOM'; tntEl.style.color = '#ffe14d'; }
+      else {
+        tntEl.textContent = '🧨 ' + (leftMs / 1000).toFixed(1);
+        if (leftMs < 1200) tntEl.style.color = '#ffe14d';
+      }
     }
 
     if (now - last >= 500) {
@@ -1446,13 +1476,20 @@
     '</feComponentTransfer></filter>';
 
   var HOST_CSS = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647';
+  function mountTarget() {
+    // In fullscreen the browser only paints descendants of the fullscreen
+    // element - anything left on <body> simply vanishes. Every overlay,
+    // toast and button has to follow the game in.
+    return document.fullscreenElement || document.body;
+  }
   function ensureMounted() {
     // The game rebuilds <body> while booting; it can sweep our host into its
     // own wrapper AND stamp new inline styles on it (seen: z-index 2,
     // position absolute). Re-assert both the parent and the style.
-    if (document.body && host.parentNode !== document.body) document.body.appendChild(host);
-    if (document.body && fbSvg.parentNode !== document.body) {
-      document.body.appendChild(fbSvg);
+    var tgt = mountTarget();
+    if (tgt && host.parentNode !== tgt) tgt.appendChild(host);
+    if (tgt && fbSvg.parentNode !== tgt) {
+      tgt.appendChild(fbSvg);
       fbApply();                       // re-point the canvas at the filter
     }
     if (host.style.zIndex !== '2147483647' || host.style.position !== 'fixed') {
