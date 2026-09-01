@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.0.0';
+  var VERSION = '3.0.1';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -1309,26 +1309,33 @@
   }
 
   // Hitboxes: replay the game's own F3+B chord as synthetic key events.
-  function pressHitboxes() {
+  // Verified in-world: the pig gets its box. This build does NOT suppress the
+  // debug-screen toggle while chording, so a plain F3 tap afterwards flips the
+  // debug screen back to where it was.
+  function sendKey(type, code, key, keyCode) {
     var c = findCanvas();
-    var targets = [window, document];
-    if (c) targets.unshift(c);
-    function kev(type, code, key, keyCode) {
-      targets.forEach(function (t) {
-        var e = new KeyboardEvent(type, { code: code, key: key, keyCode: keyCode, which: keyCode, bubbles: true, cancelable: true });
-        try { Object.defineProperty(e, 'keyCode', { value: keyCode }); } catch (x) {}
-        try { Object.defineProperty(e, 'which', { value: keyCode }); } catch (x) {}
-        try { t.dispatchEvent(e); } catch (x) {}
-      });
-    }
-    kev('keydown', 'F3', 'F3', 114);
+    [c, window, document].forEach(function (t) {
+      if (!t) return;
+      var e = new KeyboardEvent(type, { code: code, key: key, keyCode: keyCode, which: keyCode, bubbles: true, cancelable: true });
+      try { Object.defineProperty(e, 'keyCode', { value: keyCode }); } catch (x) {}
+      try { Object.defineProperty(e, 'which', { value: keyCode }); } catch (x) {}
+      try { t.dispatchEvent(e); } catch (x) {}
+    });
+  }
+  function pressHitboxes() {
+    sendKey('keydown', 'F3', 'F3', 114);
     setTimeout(function () {
-      kev('keydown', 'KeyB', 'b', 66);
+      sendKey('keydown', 'KeyB', 'b', 66);
       setTimeout(function () {
-        kev('keyup', 'KeyB', 'b', 66);
-        kev('keyup', 'F3', 'F3', 114);
-      }, 80);
-    }, 80);
+        sendKey('keyup', 'KeyB', 'b', 66);
+        sendKey('keyup', 'F3', 'F3', 114);
+        // undo the debug-screen flip the chord caused
+        setTimeout(function () {
+          sendKey('keydown', 'F3', 'F3', 114);
+          setTimeout(function () { sendKey('keyup', 'F3', 'F3', 114); }, 90);
+        }, 250);
+      }, 110);
+    }, 130);
   }
 
   var keyEls = {};
