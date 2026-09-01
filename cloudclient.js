@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.3.0';
+  var VERSION = '3.4.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -245,6 +245,170 @@
       try { list = JSON.parse(opts.resourcePacks || '[]'); } catch (e) {}
       list = list.filter(function (n) { return n !== PACK_NAME; });
       if (on) list.push(PACK_NAME);
+      return { resourcePacks: JSON.stringify(list) };
+    });
+  }
+
+  /* --------------------------- title screen theme ----------------------- */
+  // GUI textures from packs verifiably work on this client (block MODELS do
+  // not - see the X-ray postmortem). So the title screen gets re-skinned the
+  // legitimate way: a theme pack generated in the browser with canvas and
+  // written into the game's pack filesystem. Logo, panorama, buttons, hotbar,
+  // menu background and the yellow splash lines are all ours.
+  var THEME_PACK = 'CloudClient-Theme';
+
+  function px(w, h, draw) {
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    var g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    draw(g, w, h);
+    return new Promise(function (res) {
+      c.toBlob(function (b) { b.arrayBuffer().then(res); }, 'image/png');
+    });
+  }
+
+  function drawLogoBanner(g) {
+    // 310x88 canvas; the game shows rows 0-43 as the left 155px of the logo
+    // and rows 45-88 as the right 155px, so the banner is painted whole at
+    // y0 and then its right half is copied down a row of 45.
+    var tmp = document.createElement('canvas');
+    tmp.width = 310; tmp.height = 44;
+    var t = tmp.getContext('2d');
+    t.imageSmoothingEnabled = false;
+
+    // chunky pixel wordmark, drawn small then scaled 4x
+    var small = document.createElement('canvas');
+    small.width = 78; small.height = 11;
+    var sg = small.getContext('2d');
+    sg.font = '9px monospace';
+    sg.textBaseline = 'top';
+    sg.fillStyle = '#0b2231'; sg.fillText('CloudClient', 3, 2);   // shadow
+    sg.fillStyle = '#ffffff'; sg.fillText('Cloud', 2, 1);
+    sg.fillStyle = '#7dd3fc'; sg.fillText('Client', 2 + sg.measureText('Cloud').width, 1);
+    t.drawImage(small, 0, 0, 78, 11, 0, 0, 312, 44);
+
+    // little cloud to the left of nothing? keep it clean.
+    g.clearRect(0, 0, 256, 256);
+    g.drawImage(tmp, 0, 0, 155, 44, 0, 0, 155, 44);      // left half -> row 0
+    g.drawImage(tmp, 155, 0, 155, 44, 0, 45, 155, 44);   // right half -> row 45
+  }
+
+  function drawPanorama(g, w, h) {
+    var grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, '#04090f');
+    grad.addColorStop(0.45, '#0b2231');
+    grad.addColorStop(1, '#1c4a6e');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w, h);
+    // stars - deterministic scatter so all six faces feel alike
+    var seed = 9;
+    function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+    for (var i = 0; i < 90; i++) {
+      var x = rnd() * w, y = rnd() * h * 0.7, big = rnd() > 0.85;
+      g.fillStyle = big ? '#cfe9ff' : 'rgba(180,220,255,0.6)';
+      g.fillRect(x, y, big ? 2 : 1, big ? 2 : 1);
+    }
+    // a couple of blocky clouds near the horizon
+    g.fillStyle = 'rgba(125,211,252,0.16)';
+    for (var k = 0; k < 4; k++) {
+      var cx = rnd() * w, cy = h * (0.55 + rnd() * 0.2);
+      g.fillRect(cx, cy, 34, 7);
+      g.fillRect(cx + 7, cy - 5, 18, 5);
+    }
+  }
+
+  function drawWidgets(g) {
+    g.clearRect(0, 0, 256, 256);
+    // hotbar, 182x22 at (0,0): dark glassy bar with 9 slot outlines
+    g.fillStyle = 'rgba(10,16,24,0.85)';
+    g.fillRect(0, 0, 182, 22);
+    g.strokeStyle = 'rgba(125,211,252,0.35)';
+    g.lineWidth = 1;
+    g.strokeRect(0.5, 0.5, 181, 21);
+    g.strokeStyle = 'rgba(125,211,252,0.18)';
+    for (var i = 0; i < 9; i++) g.strokeRect(i * 20 + 1.5, 1.5, 19, 19);
+    // selector frame, 24x24 at (0,22)
+    g.strokeStyle = '#7dd3fc';
+    g.lineWidth = 2;
+    g.strokeRect(1, 23, 22, 22);
+    // buttons, 200x20 strips: disabled y46, normal y66, hover y86
+    function button(y, fill, edge) {
+      g.fillStyle = fill;
+      g.fillRect(0, y, 200, 20);
+      g.strokeStyle = edge;
+      g.lineWidth = 1;
+      g.strokeRect(0.5, y + 0.5, 199, 19);
+      g.fillStyle = 'rgba(255,255,255,0.05)';
+      g.fillRect(0, y, 200, 2);
+    }
+    button(46, 'rgba(8,12,18,0.8)', 'rgba(80,90,100,0.5)');
+    button(66, 'rgba(15,25,38,0.92)', 'rgba(125,211,252,0.45)');
+    button(86, 'rgba(20,38,58,0.95)', '#7dd3fc');
+  }
+
+  function drawMenuBg(g, w, h) {
+    g.fillStyle = '#0d1420';
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = '#111a29';
+    for (var y = 0; y < h; y += 4) for (var x = 0; x < w; x += 4) {
+      if (((x + y) / 4) % 2 === 0) g.fillRect(x, y, 4, 4);
+    }
+  }
+
+  var THEME_SPLASHES = ['CloudClient!', 'Unlaggy edition!', 'Right Shift = mods!',
+    'F is for fullbright!', 'Made by Colin!', 'Chromebook certified!',
+    'Also try water!', 'ssshhh, in class!', '0% downloads, 100% cloud!',
+    'Press X to doubt!', 'Now with 3 fps more!'].join('\n');
+
+  function installThemePack() {
+    return Promise.all([
+      px(256, 256, drawLogoBanner),
+      px(256, 256, drawPanorama),
+      px(256, 256, drawWidgets),
+      px(16, 16, drawMenuBg)
+    ]).then(function (imgs) {
+      return openPackDB().then(function (db) {
+        if (!db) return false;
+        var enc = new TextEncoder();
+        var base = 'resourcepacks/' + THEME_PACK + '/assets/minecraft/';
+        var files = [
+          { path: 'resourcepacks/' + THEME_PACK + '/pack.mcmeta',
+            data: enc.encode(JSON.stringify({ pack: { pack_format: 1, description: 'CloudClient theme' } })).buffer },
+          { path: base + 'textures/gui/title/minecraft.png', data: imgs[0] },
+          { path: base + 'textures/gui/widgets.png', data: imgs[2] },
+          { path: base + 'textures/gui/options_background.png', data: imgs[3] },
+          { path: base + 'texts/splashes.txt', data: enc.encode(THEME_SPLASHES).buffer }
+        ];
+        for (var i = 0; i < 6; i++) {
+          files.push({ path: base + 'textures/gui/title/background/panorama_' + i + '.png', data: imgs[1].slice(0) });
+        }
+        return new Promise(function (res) {
+          var tx = db.transaction('filesystem', 'readwrite');
+          var os = tx.objectStore('filesystem');
+          var manReq = os.get(['resourcepacks/manifest.json']);
+          manReq.onsuccess = function () {
+            var man = { resourcePacks: [] };
+            try { if (manReq.result) man = JSON.parse(new TextDecoder().decode(manReq.result.data)); } catch (e) {}
+            if (!man.resourcePacks) man.resourcePacks = [];
+            man.resourcePacks = man.resourcePacks.filter(function (pk) { return pk.name !== THEME_PACK; });
+            man.resourcePacks.push({ timestamp: Date.now(), name: THEME_PACK, folder: THEME_PACK, domains: ['minecraft'] });
+            files.forEach(function (f) { os.put({ path: f.path, data: f.data }); });
+            os.put({ path: 'resourcepacks/manifest.json', data: enc.encode(JSON.stringify(man)).buffer });
+          };
+          tx.oncomplete = function () { db.close(); res(true); };
+          tx.onerror = function () { db.close(); res(false); };
+        });
+      });
+    });
+  }
+
+  function selectThemePack(on) {
+    return updateGameOptions(function (opts) {
+      var list = [];
+      try { list = JSON.parse(opts.resourcePacks || '[]'); } catch (e) {}
+      list = list.filter(function (n) { return n !== THEME_PACK; });
+      if (on) list.push(THEME_PACK);
       return { resourcePacks: JSON.stringify(list) };
     });
   }
@@ -517,6 +681,15 @@
         if (b) { b.click(); return; }
         if (tries++ < 120) setTimeout(press, 100);
       })();
+    }
+  });
+
+  register({
+    id: 'theme', name: 'CloudClient Title Screen', cat: 'visual', def: true, reload: true,
+    desc: 'Re-skins the game itself: CloudClient logo, night-sky panorama, dark buttons and hotbar, our own splash texts. Applies on the next restart.',
+    apply: function (on) {
+      if (on) installThemePack().then(function (ok) { if (ok) selectThemePack(true); });
+      else selectThemePack(false);
     }
   });
 
