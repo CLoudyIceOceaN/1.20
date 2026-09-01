@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.1.1';
+  var VERSION = '3.2.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -42,14 +42,22 @@
 
   /* ===================== the game, from outside ======================== */
 
-  function findCanvas(root) {
-    root = root || document;
+  // The canvas hides inside a shadow root, and this walk touches every
+  // element on the page - far too expensive for the once-per-frame callers.
+  // Cache the hit and only re-walk when the cached canvas left the document.
+  var canvasCache = null;
+  function findCanvasSlow(root) {
     var all = root.querySelectorAll('*');
     for (var i = 0; i < all.length; i++) {
       if (all[i].tagName === 'CANVAS') return all[i];
-      if (all[i].shadowRoot) { var c = findCanvas(all[i].shadowRoot); if (c) return c; }
+      if (all[i].shadowRoot) { var c = findCanvasSlow(all[i].shadowRoot); if (c) return c; }
     }
     return null;
+  }
+  function findCanvas() {
+    if (canvasCache && canvasCache.isConnected) return canvasCache;
+    canvasCache = findCanvasSlow(document);
+    return canvasCache;
   }
 
   var dprGetter = null;
@@ -241,6 +249,92 @@
     });
   }
 
+  /* ------------------------------ X-ray -------------------------------- */
+  // A real X-ray, the resource-pack way: give the boring blocks EMPTY models
+  // so the game simply doesn't draw them, leaving ores and caves visible.
+  // The pack lives in the game's IndexedDB filesystem like NoAnim does; the
+  // twist is that toggling rewrites the model files in place and then presses
+  // F3+T (the game's own resource reload), so X works without a restart.
+  var XRAY_PACK = 'CloudClient-XRay';
+  var XRAY_MODELS = ['stone', 'granite', 'smooth_granite', 'diorite', 'smooth_diorite',
+    'andesite', 'smooth_andesite', 'dirt', 'coarse_dirt', 'podzol', 'grass_normal',
+    'gravel', 'sand', 'red_sand', 'cobblestone', 'netherrack', 'stone_slab',
+    'sandstone', 'chiseled_sandstone', 'smooth_sandstone'];
+
+  function xraySetFiles(see) {
+    return openPackDB().then(function (db) {
+      if (!db) return false;
+      var enc = new TextEncoder();
+      var empty = enc.encode(JSON.stringify({ elements: [] }));
+      return new Promise(function (res) {
+        var tx = db.transaction('filesystem', 'readwrite');
+        var os = tx.objectStore('filesystem');
+        var manReq = os.get(['resourcepacks/manifest.json']);
+        manReq.onsuccess = function () {
+          var man = { resourcePacks: [] };
+          try { if (manReq.result) man = JSON.parse(new TextDecoder().decode(manReq.result.data)); } catch (e) {}
+          if (!man.resourcePacks) man.resourcePacks = [];
+          man.resourcePacks = man.resourcePacks.filter(function (pk) { return pk.name !== XRAY_PACK; });
+          man.resourcePacks.push({ timestamp: Date.now(), name: XRAY_PACK, folder: XRAY_PACK, domains: ['minecraft'] });
+          os.put({ path: 'resourcepacks/' + XRAY_PACK + '/pack.mcmeta',
+            data: enc.encode(JSON.stringify({ pack: { pack_format: 1, description: 'CloudClient X-ray' } })).buffer });
+          XRAY_MODELS.forEach(function (n) {
+            var path = 'resourcepacks/' + XRAY_PACK + '/assets/minecraft/models/block/' + n + '.json';
+            if (see) os.put({ path: path, data: empty.buffer.slice(0) });
+            else os.delete([path]);
+          });
+          os.put({ path: 'resourcepacks/manifest.json', data: enc.encode(JSON.stringify(man)).buffer });
+        };
+        tx.oncomplete = function () { db.close(); res(true); };
+        tx.onerror = function () { db.close(); res(false); };
+      });
+    });
+  }
+
+  function selectXrayPack(on) {
+    return updateGameOptions(function (opts) {
+      var list = [];
+      try { list = JSON.parse(opts.resourcePacks || '[]'); } catch (e) {}
+      list = list.filter(function (n) { return n !== XRAY_PACK; });
+      if (on) list.push(XRAY_PACK);
+      return { resourcePacks: JSON.stringify(list) };
+    });
+  }
+
+  function pressReload() {                    // the game's own F3+T
+    sendKey('keydown', 'F3', 'F3', 114);
+    setTimeout(function () {
+      sendKey('keydown', 'KeyT', 't', 84);
+      setTimeout(function () {
+        sendKey('keyup', 'KeyT', 't', 84);
+        sendKey('keyup', 'F3', 'F3', 114);
+        setTimeout(function () {              // undo the chord's debug flip
+          sendKey('keydown', 'F3', 'F3', 114);
+          setTimeout(function () { sendKey('keyup', 'F3', 'F3', 114); }, 90);
+        }, 250);
+      }, 110);
+    }, 130);
+  }
+
+  var xraySeeing = false;
+  var xrayBusy = false;
+  function xrayApplyFiles(see, announce) {
+    if (xrayBusy) return;
+    xrayBusy = true;
+    xraySetFiles(see).then(function (ok) {
+      xrayBusy = false;
+      if (!ok) { toast('X-ray could not write its pack'); return; }
+      xraySeeing = see;
+      if (findCanvas()) {
+        pressReload();
+        if (announce) toast(see ? '\u26CF X-ray ON \u2014 reloading textures\u2026' : 'X-ray off \u2014 reloading\u2026');
+      } else if (announce) {
+        toast(see ? '\u26CF X-ray ready \u2014 it shows once you restart' : 'X-ray off');
+      }
+    });
+  }
+  function xrayFlip() { xrayApplyFiles(!xraySeeing, true); }
+
   /* ============================ mod registry =========================== */
 
   var mods = [];
@@ -380,9 +474,9 @@
   // white, and pull the dark end up hard. Caves get bright; a sunny day
   // barely changes, which is what a real fullbright feels like.
   var FB_LEVELS = {
-    1: { table: '0 0.34 0.57 0.79 1', sat: 1.04 },
-    2: { table: '0 0.47 0.68 0.86 1', sat: 1.1 },
-    3: { table: '0 0.6 0.79 0.92 1', sat: 1.16 }
+    1: { table: '0 0.4 0.62 0.82 1', sat: 1.06 },
+    2: { table: '0 0.58 0.78 0.9 1', sat: 1.12 },
+    3: { table: '0 0.7 0.86 0.95 1', sat: 1.16 }
   };
 
   register({
@@ -392,8 +486,8 @@
       { id: 'key', type: 'select', label: 'Toggle key', def: 'KeyF', options: [
         { v: 'KeyF', label: 'F' }, { v: 'KeyG', label: 'G' }, { v: 'KeyH', label: 'H' } ] },
       { id: 'strength', type: 'select', label: 'Strength', def: '2', options: [
-        { v: '1', label: 'Subtle - a bit brighter' },
-        { v: '2', label: 'Cave vision' },
+        { v: '1', label: 'Brighter caves' },
+        { v: '2', label: 'Night vision' },
         { v: '3', label: 'Maximum' } ] }
     ],
     apply: function (on) {
@@ -494,6 +588,20 @@
     ],
     apply: function () {},
     onToggle: function () { hbSync(false); }
+  });
+
+  register({
+    id: 'xray', name: 'X-Ray', cat: 'play', def: false, storeOnly: 'xray',
+    desc: 'See ores and caves through the ground: the boring blocks stop being drawn. Press the key to flip it while you play. Takes a few seconds each flip (the game reloads its textures), and expect fewer FPS while it\'s on.',
+    settings: [
+      { id: 'key', type: 'select', label: 'Toggle key', def: 'KeyX', options: [
+        { v: 'KeyX', label: 'X' }, { v: 'KeyJ', label: 'J' }, { v: 'KeyK', label: 'K' } ] }
+    ],
+    apply: function () {},
+    onToggle: function (on) {
+      selectXrayPack(on);
+      xrayApplyFiles(on, true);
+    }
   });
 
   /* --------------------------- other built-ins ------------------------ */
@@ -600,6 +708,9 @@
     { id: 'tnttimer', icon: '🧨', name: 'TNT Countdown', by: 'CloudClient', tag: 'gameplay',
       desc: 'A 4-second fuse timer on screen. You press V when the TNT is lit - the game won\'t tell outside code about its TNT, so the timing is yours.',
       mods: ['tnttimer'] },
+    { id: 'xray', icon: '⛏️', name: 'X-Ray', by: 'CloudClient', tag: 'gameplay',
+      desc: 'The classic. Stone, dirt and friends stop being drawn so ores and caves show through. X to toggle in game.',
+      mods: ['xray'] },
     { id: 'keystrokes', icon: '⌨️', name: 'Keystrokes', by: 'CloudClient', tag: 'HUD',
       desc: 'WASD, space and mouse buttons drawn on screen, like every PvP client since forever.',
       mods: ['keystrokes'] },
@@ -1300,7 +1411,11 @@
     // Right Shift = the mod menu, the way Resent does it. Left Shift stays
     // the game's sneak key.
     if (!e.repeat && (e.code === 'ShiftRight' || (e.key === 'Shift' && e.location === 2))) {
-      e.preventDefault(); e.stopPropagation(); toggle();
+      // only from gameplay (or to close it again) - typing a capital in chat
+      // with the right shift must not pop the menu
+      if (document.pointerLockElement || open) {
+        e.preventDefault(); e.stopPropagation(); toggle();
+      }
     }
   }, true);
 
@@ -1387,13 +1502,20 @@
     var el = keyEls[code];
     if (el) el.classList.toggle('down', down);
   }
+  /** Mod hotkeys only fire while the game has the mouse captured - which is
+   *  exactly "actually playing". Chat, sign editing, menus, the world-name
+   *  box: they all release the mouse, so typing can never trip a hotkey. */
+  function playing() { return !!document.pointerLockElement; }
+
   window.addEventListener('keydown', function (e) {
-    if (isOn('zoom') && isKey(e, settingsOf(modById('zoom')).key)) { zoomHeld = true; zoomApply(); }
-    if (isOn('tnttimer') && isKey(e, settingsOf(modById('tnttimer')).key)) tntStart();
-    if (isOn('fullbright') && !e.repeat && isKey(e, settingsOf(modById('fullbright')).key)) {
-      // don't steal the key while typing in our own editor
-      var a = root.activeElement;
-      if (!a || (a.tagName !== 'TEXTAREA' && a.tagName !== 'INPUT')) fbToggle();
+    if (playing()) {
+      if (isOn('zoom') && isKey(e, settingsOf(modById('zoom')).key)) { zoomHeld = true; zoomApply(); }
+      if (isOn('tnttimer') && isKey(e, settingsOf(modById('tnttimer')).key)) tntStart();
+      if (isOn('fullbright') && !e.repeat && isKey(e, settingsOf(modById('fullbright')).key)) fbToggle();
+      if (isOn('xray') && !e.repeat && isKey(e, settingsOf(modById('xray')).key)) {
+        setMod('xray', true);          // already on; re-assert is harmless
+        xrayFlip();
+      }
     }
     markKey(evCode(e), true);
   }, true);
