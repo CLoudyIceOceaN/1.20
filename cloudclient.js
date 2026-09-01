@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.2.2';
+  var VERSION = '3.3.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -248,105 +248,6 @@
       return { resourcePacks: JSON.stringify(list) };
     });
   }
-
-  /* ------------------------------ X-ray -------------------------------- */
-  // A real X-ray, the resource-pack way: give the boring blocks EMPTY models
-  // so the game simply doesn't draw them, leaving ores and caves visible.
-  // The pack lives in the game's IndexedDB filesystem like NoAnim does; the
-  // twist is that toggling rewrites the model files in place and then presses
-  // F3+T (the game's own resource reload), so X works without a restart.
-  var XRAY_PACK = 'CloudClient-XRay';
-  var XRAY_MODELS = ['stone', 'granite', 'smooth_granite', 'diorite', 'smooth_diorite',
-    'andesite', 'smooth_andesite', 'dirt', 'coarse_dirt', 'podzol', 'grass_normal',
-    'gravel', 'sand', 'red_sand', 'cobblestone', 'netherrack', 'stone_slab',
-    'sandstone', 'chiseled_sandstone', 'smooth_sandstone'];
-
-  function xraySetFiles(see) {
-    return openPackDB().then(function (db) {
-      if (!db) return false;
-      var enc = new TextEncoder();
-      // {"elements":[]} is a BROKEN model to this loader (purple-black
-      // checkers). Inheriting from block/block - which only carries display
-      // transforms, no shapes - is the valid way to render nothing.
-      var empty = enc.encode(JSON.stringify({ parent: 'block/block' }));
-      return new Promise(function (res) {
-        var tx = db.transaction('filesystem', 'readwrite');
-        var os = tx.objectStore('filesystem');
-        var manReq = os.get(['resourcepacks/manifest.json']);
-        manReq.onsuccess = function () {
-          var man = { resourcePacks: [] };
-          try { if (manReq.result) man = JSON.parse(new TextDecoder().decode(manReq.result.data)); } catch (e) {}
-          if (!man.resourcePacks) man.resourcePacks = [];
-          man.resourcePacks = man.resourcePacks.filter(function (pk) { return pk.name !== XRAY_PACK; });
-          man.resourcePacks.push({ timestamp: Date.now(), name: XRAY_PACK, folder: XRAY_PACK, domains: ['minecraft'] });
-          os.put({ path: 'resourcepacks/' + XRAY_PACK + '/pack.mcmeta',
-            data: enc.encode(JSON.stringify({ pack: { pack_format: 1, description: 'CloudClient X-ray' } })).buffer });
-          XRAY_MODELS.forEach(function (n) {
-            var path = 'resourcepacks/' + XRAY_PACK + '/assets/minecraft/models/block/' + n + '.json';
-            if (see) os.put({ path: path, data: empty.buffer.slice(0) });
-            else os.delete([path]);
-          });
-          os.put({ path: 'resourcepacks/manifest.json', data: enc.encode(JSON.stringify(man)).buffer });
-        };
-        tx.oncomplete = function () { db.close(); res(true); };
-        tx.onerror = function () { db.close(); res(false); };
-      });
-    });
-  }
-
-  function selectXrayPack(on) {
-    return updateGameOptions(function (opts) {
-      var list = [];
-      try { list = JSON.parse(opts.resourcePacks || '[]'); } catch (e) {}
-      list = list.filter(function (n) { return n !== XRAY_PACK; });
-      if (on) list.push(XRAY_PACK);
-      return { resourcePacks: JSON.stringify(list) };
-    });
-  }
-
-  function pressReload() {                    // the game's own F3+T
-    sendKey('keydown', 'F3', 'F3', 114);
-    setTimeout(function () {
-      sendKey('keydown', 'KeyT', 't', 84);
-      setTimeout(function () {
-        sendKey('keyup', 'KeyT', 't', 84);
-        sendKey('keyup', 'F3', 'F3', 114);
-        // the chord flips the debug screen too, and the game freezes for the
-        // reload right after - wait it out before flipping the debug back
-        setTimeout(function () {
-          sendKey('keydown', 'F3', 'F3', 114);
-          setTimeout(function () { sendKey('keyup', 'F3', 'F3', 114); }, 90);
-        }, 4000);
-      }, 110);
-    }, 130);
-  }
-
-  // The game reads its pack list ONCE, at boot. The X-ray pack therefore
-  // stays selected (but empty) from the moment the mod is installed - after
-  // one restart it is "armed", and from then on toggling only rewrites the
-  // model files and presses F3+T. No further restarts.
-  var xrayArmed = false;
-  var xraySeeing = false;
-  var xrayBusy = false;
-
-  function xrayApplyFiles(see, announce) {
-    if (xrayBusy) return;
-    xrayBusy = true;
-    xraySetFiles(see).then(function (ok) {
-      xrayBusy = false;
-      if (!ok) { toast('X-ray could not write its pack'); return; }
-      xraySeeing = see;
-      if (!xrayArmed) {
-        if (announce) toast(see ? '\u26CF X-ray installed \u2014 restart the game once to arm it' : 'X-ray off');
-        return;
-      }
-      if (findCanvas()) {
-        pressReload();
-        if (announce) toast(see ? '\u26CF X-ray ON \u2014 reloading\u2026 (a few seconds)' : 'X-ray off \u2014 reloading\u2026');
-      }
-    });
-  }
-  function xrayFlip() { xrayApplyFiles(!xraySeeing, true); }
 
   /* ============================ mod registry =========================== */
 
@@ -603,29 +504,6 @@
     onToggle: function () { hbSync(false); }
   });
 
-  register({
-    id: 'xray', name: 'X-Ray', cat: 'play', def: false, storeOnly: 'xray',
-    desc: 'See ores and caves through the ground: the boring blocks stop being drawn. Press the key to flip it while you play. Takes a few seconds each flip (the game reloads its textures), and expect fewer FPS while it\'s on.',
-    settings: [
-      { id: 'key', type: 'select', label: 'Toggle key', def: 'KeyX', options: [
-        { v: 'KeyX', label: 'X' }, { v: 'KeyJ', label: 'J' }, { v: 'KeyK', label: 'K' } ] }
-    ],
-    apply: function (on) {
-      // keep the (possibly empty) pack selected so a restart arms it
-      if (on || cfg.installed.xray) selectXrayPack(true);
-    },
-    onToggle: function (on) {
-      selectXrayPack(true);
-      xrayApplyFiles(on, true);
-    }
-  });
-
-  getGameOptions().then(function (o) {
-    try { xrayArmed = JSON.parse(o.resourcePacks || '[]').indexOf(XRAY_PACK) >= 0; } catch (e) {}
-    // armed and switched on from a previous session: make the files match
-    if (xrayArmed && isOn('xray')) xrayApplyFiles(true, false);
-  });
-
   /* --------------------------- other built-ins ------------------------ */
 
   register({
@@ -730,9 +608,6 @@
     { id: 'tnttimer', icon: '🧨', name: 'TNT Countdown', by: 'CloudClient', tag: 'gameplay',
       desc: 'A 4-second fuse timer on screen. You press V when the TNT is lit - the game won\'t tell outside code about its TNT, so the timing is yours.',
       mods: ['tnttimer'] },
-    { id: 'xray', icon: '⛏️', name: 'X-Ray', by: 'CloudClient', tag: 'gameplay',
-      desc: 'The classic. Stone, dirt and friends stop being drawn so ores and caves show through. X to toggle in game.',
-      mods: ['xray'] },
     { id: 'keystrokes', icon: '⌨️', name: 'Keystrokes', by: 'CloudClient', tag: 'HUD',
       desc: 'WASD, space and mouse buttons drawn on screen, like every PvP client since forever.',
       mods: ['keystrokes'] },
@@ -1534,10 +1409,6 @@
       if (isOn('zoom') && isKey(e, settingsOf(modById('zoom')).key)) { zoomHeld = true; zoomApply(); }
       if (isOn('tnttimer') && isKey(e, settingsOf(modById('tnttimer')).key)) tntStart();
       if (isOn('fullbright') && !e.repeat && isKey(e, settingsOf(modById('fullbright')).key)) fbToggle();
-      if (isOn('xray') && !e.repeat && isKey(e, settingsOf(modById('xray')).key)) {
-        setMod('xray', true);          // already on; re-assert is harmless
-        xrayFlip();
-      }
     }
     markKey(evCode(e), true);
   }, true);
@@ -1670,6 +1541,38 @@
 
   function applyAll() { mods.forEach(applyMod); }
   applyAll();
+
+  // An X-ray experiment shipped for about an hour on 2026-08-31 before it
+  // turned out this client can't load block models from packs at all - the
+  // pack it installed renders the world as purple-black checkers. Scrub it
+  // from any profile that picked it up.
+  (function cleanupXray() {
+    if (cfg.installed && cfg.installed.xray) { delete cfg.installed.xray; delete cfg.mods.xray; saveCfg(); }
+    updateGameOptions(function (opts) {
+      var list = [];
+      try { list = JSON.parse(opts.resourcePacks || '[]'); } catch (e) {}
+      if (list.indexOf('CloudClient-XRay') < 0) return {};
+      return { resourcePacks: JSON.stringify(list.filter(function (n) { return n !== 'CloudClient-XRay'; })) };
+    });
+    openPackDB().then(function (db) {
+      if (!db) return;
+      var tx = db.transaction('filesystem', 'readwrite');
+      var os = tx.objectStore('filesystem');
+      var range = IDBKeyRange.bound(['resourcepacks/CloudClient-XRay/'], ['resourcepacks/CloudClient-XRay/\uffff']);
+      os.delete(range);
+      var manReq = os.get(['resourcepacks/manifest.json']);
+      manReq.onsuccess = function () {
+        if (!manReq.result) return;
+        try {
+          var man = JSON.parse(new TextDecoder().decode(manReq.result.data));
+          man.resourcePacks = (man.resourcePacks || []).filter(function (pk) { return pk.name !== 'CloudClient-XRay'; });
+          os.put({ path: 'resourcepacks/manifest.json', data: new TextEncoder().encode(JSON.stringify(man)).buffer });
+        } catch (e) {}
+      };
+      tx.oncomplete = function () { db.close(); };
+      tx.onerror = function () { db.close(); };
+    });
+  })();
 
   var waited = 0, seeded = false;
   (function waitForOptions() {
