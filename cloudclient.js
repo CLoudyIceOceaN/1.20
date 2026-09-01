@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '2.3.0';
+  var VERSION = '3.0.0';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -269,7 +269,11 @@
   function setMod(id, on) {
     cfg.mods[id].on = on; saveCfg();
     var m = modById(id);
-    if (m) { applyMod(m); if (m.reload) needsReload = true; }
+    if (m) {
+      applyMod(m);
+      if (m.reload) needsReload = true;
+      if (m.onToggle) { try { m.onToggle(on); } catch (e) {} }
+    }
     renderMenu();
   }
   function setSetting(id, key, value, redraw) {
@@ -372,13 +376,13 @@
   var fbActive = false;
   var fbFilterStr = '';
 
-  // A bare gamma lift makes daytime look like milk - the midtones rise but the
-  // contrast and color don't. Each strength pairs a gamma curve with contrast
-  // and saturation compensation, tuned by eye against the title panorama.
+  // Shadow lift, not gamma: these curves pin black at black and white at
+  // white, and pull the dark end up hard. Caves get bright; a sunny day
+  // barely changes, which is what a real fullbright feels like.
   var FB_LEVELS = {
-    1: { exp: 0.7, sat: 1.08, con: 1.05 },
-    2: { exp: 0.52, sat: 1.22, con: 1.1 },
-    3: { exp: 0.38, sat: 1.32, con: 1.12 }
+    1: { table: '0 0.34 0.57 0.79 1', sat: 1.04 },
+    2: { table: '0 0.47 0.68 0.86 1', sat: 1.1 },
+    3: { table: '0 0.6 0.79 0.92 1', sat: 1.16 }
   };
 
   register({
@@ -410,9 +414,10 @@
       var svg = document.getElementById('ccgamma-svg');
       if (svg) {
         svg.querySelectorAll('feFuncR,feFuncG,feFuncB').forEach(function (f) {
-          f.setAttribute('exponent', lv.exp);
+          f.setAttribute('type', 'table');
+          f.setAttribute('tableValues', lv.table);
         });
-        fbFilterStr = 'url(#ccgamma) saturate(' + lv.sat + ') contrast(' + lv.con + ')';
+        fbFilterStr = 'url(#ccgamma) saturate(' + lv.sat + ')';
       } else fbFilterStr = 'brightness(1.7) saturate(1.2)';   // fallback
     } else {
       fbFilterStr = '';
@@ -460,11 +465,15 @@
 
   register({
     id: 'hitboxes', name: 'Hitboxes', cat: 'play', def: false, storeOnly: 'hitboxes',
-    desc: 'Fires the game\'s own F3+B chord to draw boxes around every entity. Use the button below while you\'re in a world.',
+    desc: 'Boxes around every mob and player - the game\'s own hitbox view. Flip the switch while you\'re in a world.',
     settings: [
-      { id: 'go', type: 'button', label: 'Toggle hitboxes now (F3+B)' }
+      { id: 'go', type: 'button', label: 'Press again (if it got out of sync)' }
     ],
-    apply: function () {}
+    apply: function () {},
+    onToggle: function (on) {
+      pressHitboxes();
+      toast(on ? '\uD83D\uDCE6 Hitboxes ON' : 'Hitboxes off');
+    }
   });
 
   /* --------------------------- other built-ins ------------------------ */
@@ -642,13 +651,29 @@
     '  background:rgba(13,17,23,.92);color:#e6edf3;font:600 13px system-ui;padding:8px 16px;border-radius:20px;',
     '  border:1px solid rgba(125,211,252,.3);transition:opacity .2s,transform .2s}',
     '.toast.on{opacity:1;transform:translate(-50%,0)}',
+    '@keyframes cccloud1{0%{transform:translateX(-18vw)}100%{transform:translateX(112vw)}}',
+    '@keyframes cccloud2{0%{transform:translateX(112vw)}100%{transform:translateX(-22vw)}}',
+    '@keyframes ccsplash{0%,100%{transform:rotate(-14deg) scale(1)}50%{transform:rotate(-14deg) scale(1.08)}}',
+    '@keyframes ccstars{0%{opacity:.5}50%{opacity:1}100%{opacity:.5}}',
     '.home{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;',
-    '  gap:14px;background:radial-gradient(1000px 500px at 50% -10%,#123047 0%,#0b1017 55%,#07090d 100%);z-index:5;',
-    '  animation:ccfade .4s ease}',
-    '.home::before{content:"";position:absolute;inset:0;opacity:.25;pointer-events:none;',
-    '  background-image:radial-gradient(#7dd3fc22 1.5px,transparent 1.5px);background-size:24px 24px;',
-    '  animation:ccdrift 60s linear infinite}',
+    '  gap:12px;overflow:hidden;z-index:5;animation:ccfade .4s ease;',
+    '  background:linear-gradient(180deg,#050b14 0%,#0a1a2e 34%,#153a5c 68%,#1f5c86 100%)}',
+    '.home::before{content:"";position:absolute;inset:0 0 55% 0;opacity:.7;pointer-events:none;',
+    '  background-image:radial-gradient(#e6edf3 1px,transparent 1px),radial-gradient(#7dd3fc 1px,transparent 1px);',
+    '  background-size:90px 70px,140px 110px;background-position:10px 10px,50px 40px;animation:ccstars 4s ease infinite}',
+    '.cloud{position:absolute;pointer-events:none;filter:blur(1px);opacity:.5}',
+    '.cloud i{position:absolute;background:#dbeafe;border-radius:4px}',
+    '.c1{top:16%;left:0;animation:cccloud1 70s linear infinite}',
+    '.c2{top:32%;left:0;animation:cccloud2 95s linear infinite;opacity:.35;transform:scale(.7)}',
+    '.c3{top:8%;left:0;animation:cccloud1 120s linear infinite;opacity:.25;transform:scale(1.3)}',
     '.home.hide{transition:opacity .45s ease;opacity:0;pointer-events:none}',
+    '.hwrap{position:relative;display:flex;flex-direction:column;align-items:center;gap:12px}',
+    '.splash{position:absolute;right:-70px;top:8px;color:#ffe14d;font:700 15px system-ui;',
+    '  text-shadow:2px 2px 0 #3f3400;animation:ccsplash 1.6s ease infinite;pointer-events:none;white-space:nowrap}',
+    '.chips{display:flex;gap:8px;margin-top:4px;position:relative;flex-wrap:wrap;justify-content:center}',
+    '.chip{background:rgba(13,17,23,.55);border:1px solid rgba(125,211,252,.25);color:#9fc9e8;',
+    '  font:600 11.5px system-ui;padding:5px 12px;border-radius:20px}',
+    '.chip b{color:#7dd3fc}',
     '.hlogo{font:700 clamp(34px,8vw,64px)/1.1 system-ui,sans-serif;color:#e6edf3;letter-spacing:-.5px;',
     '  text-shadow:0 4px 30px rgba(125,211,252,.35);animation:ccpop .5s ease;position:relative}',
     '.hlogo b{color:#7dd3fc}',
@@ -765,13 +790,19 @@
     '.row{display:flex;gap:6px;align-items:center}',
     '</style>',
     '<div class="home" id="home">',
-    '  <div class="hlogo">&#9729; Cloud<b>Client</b></div>',
-    '  <div class="hsub">the fast way to play &mdash; v' + VERSION + '</div>',
-    '  <div class="hbtns">',
-    '    <button class="hplay" id="hplay">&#9654;&nbsp; Play</button>',
-    '    <button class="hmods" id="hmods">&#128230; Mods</button>',
+    '  <div class="cloud c1"><i style="left:0;top:8px;width:70px;height:16px"></i><i style="left:14px;top:0;width:34px;height:16px"></i></div>',
+    '  <div class="cloud c2"><i style="left:0;top:8px;width:90px;height:18px"></i><i style="left:22px;top:0;width:40px;height:16px"></i></div>',
+    '  <div class="cloud c3"><i style="left:0;top:10px;width:60px;height:14px"></i><i style="left:10px;top:0;width:30px;height:14px"></i></div>',
+    '  <div class="hwrap">',
+    '    <div class="hlogo">&#9729; Cloud<b>Client</b><span class="splash" id="splash"></span></div>',
+    '    <div class="hsub">v' + VERSION + ' &middot; EaglyMC 1.20</div>',
+    '    <div class="hbtns">',
+    '      <button class="hplay" id="hplay">&#9654;&nbsp; Play</button>',
+    '      <button class="hmods" id="hmods">&#128230; Mods</button>',
+    '    </div>',
+    '    <div class="chips" id="chips"></div>',
     '  </div>',
-    '  <div class="hfoot">10+ mods &middot; nothing to install &middot; your worlds are untouched</div>',
+    '  <div class="hfoot">right shift opens the mod menu in game &middot; your worlds are untouched</div>',
     '</div>',
     '<div class="store" id="store">',
     '  <div class="swin">',
@@ -818,6 +849,21 @@
   /* ------------------------------ home -------------------------------- */
 
   var homeEl = $('#home');
+
+  var SPLASHES = ['Also try water!', 'Unlaggy!', 'Chromebook approved!', '100% cloud!',
+    'Now with mods!', 'F for fullbright!', 'ssshhh, in class!', 'Faster than the bus!',
+    'Right Shift!', 'Made by Colin!'];
+  $('#splash').textContent = SPLASHES[Math.floor(Math.random() * SPLASHES.length)];
+
+  (function fillChips() {
+    var installed = Object.keys(cfg.installed || {}).length;
+    var sc = settingsOf(modById('renderscale')).scale;
+    $('#chips').innerHTML =
+      '<span class="chip"><b>' + installed + '</b> mods installed</span>' +
+      '<span class="chip">resolution <b>' + (isOn('renderscale') ? sc + '%' : 'full') + '</b></span>' +
+      '<span class="chip"><b>0</b> things to download</span>';
+  })();
+
   $('#hplay').onclick = function () {
     homeEl.classList.add('hide');
     setTimeout(function () { homeEl.style.display = 'none'; }, 500);
@@ -1225,6 +1271,11 @@
     }
     if (e.ctrlKey && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
       e.preventDefault(); e.stopPropagation(); openStore();
+    }
+    // Right Shift = the mod menu, the way Resent does it. Left Shift stays
+    // the game's sneak key.
+    if (e.code === 'ShiftRight' && !e.repeat) {
+      e.preventDefault(); e.stopPropagation(); toggle();
     }
   }, true);
 
