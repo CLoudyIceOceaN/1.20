@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.1.0';
+  var VERSION = '3.1.1';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -1299,7 +1299,7 @@
     }
     // Right Shift = the mod menu, the way Resent does it. Left Shift stays
     // the game's sneak key.
-    if (e.code === 'ShiftRight' && !e.repeat) {
+    if (!e.repeat && (e.code === 'ShiftRight' || (e.key === 'Shift' && e.location === 2))) {
       e.preventDefault(); e.stopPropagation(); toggle();
     }
   }, true);
@@ -1366,23 +1366,40 @@
 
   var keyEls = {};
   root.querySelectorAll('.k').forEach(function (el) { keyEls[el.getAttribute('data-k')] = el; });
+
+  /** True when the event is the configured key. Some input paths deliver
+   *  key events with an EMPTY e.code (seen for real: trusted events with
+   *  code "" and only e.key set), so never match on code alone. */
+  function isKey(e, want) {
+    if (e.code && e.code === want) return true;
+    if (!e.key) return false;
+    if (want.slice(0, 3) === 'Key') return e.key.toLowerCase() === want.slice(3).toLowerCase();
+    if (want === 'Space') return e.key === ' ';
+    return e.key === want;
+  }
+  function evCode(e) {
+    if (e.code) return e.code;
+    if (e.key === ' ') return 'Space';
+    if (e.key && e.key.length === 1) return 'Key' + e.key.toUpperCase();
+    return e.key || '';
+  }
   function markKey(code, down) {
     var el = keyEls[code];
     if (el) el.classList.toggle('down', down);
   }
   window.addEventListener('keydown', function (e) {
-    if (isOn('zoom') && e.code === settingsOf(modById('zoom')).key) { zoomHeld = true; zoomApply(); }
-    if (isOn('tnttimer') && e.code === settingsOf(modById('tnttimer')).key) tntStart();
-    if (isOn('fullbright') && !e.repeat && e.code === settingsOf(modById('fullbright')).key) {
+    if (isOn('zoom') && isKey(e, settingsOf(modById('zoom')).key)) { zoomHeld = true; zoomApply(); }
+    if (isOn('tnttimer') && isKey(e, settingsOf(modById('tnttimer')).key)) tntStart();
+    if (isOn('fullbright') && !e.repeat && isKey(e, settingsOf(modById('fullbright')).key)) {
       // don't steal the key while typing in our own editor
       var a = root.activeElement;
       if (!a || (a.tagName !== 'TEXTAREA' && a.tagName !== 'INPUT')) fbToggle();
     }
-    markKey(e.code, true);
+    markKey(evCode(e), true);
   }, true);
   window.addEventListener('keyup', function (e) {
-    if (e.code === settingsOf(modById('zoom')).key) { zoomHeld = false; zoomApply(); }
-    markKey(e.code, false);
+    if (isKey(e, settingsOf(modById('zoom')).key)) { zoomHeld = false; zoomApply(); }
+    markKey(evCode(e), false);
   }, true);
 
   var clicksL = [], clicksR = [];
