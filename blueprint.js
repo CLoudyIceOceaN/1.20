@@ -226,13 +226,15 @@
     var pad = 8;
     var cw = (W + D) * tw / 2 + pad * 2;
     var chh = (W + D) * th / 2 + n * bh + pad * 2;
-    canvas.width = cw * 2; canvas.height = chh * 2;         // 2x for crisp text-size pixels
+    // draw at 2x for crisp pixels
+    canvas.width = cw * 2; canvas.height = chh * 2;
     canvas.style.width = cw + "px"; canvas.style.height = chh + "px";
     var ctx = canvas.getContext("2d");
     ctx.scale(2, 2);
     var ox = pad + D * tw / 2, oy = pad + n * bh;
 
-    function cell(layerIdx, gx, gz) {           // rotated grid -> original chars
+    // cell(): rotated grid -> original chars
+    function cell(layerIdx, gx, gz) {
       var x, z;
       if (rot === 0) { x = gx; z = gz; }
       else if (rot === 1) { x = gz; z = rows - 1 - gx; }
