@@ -17,7 +17,7 @@
 
   if (window.CloudClient) { window.CloudClient.toggle(); return; }
 
-  var VERSION = '3.4.0';
+  var VERSION = '3.4.1';
   var CFG_KEY = 'cloudclient.cfg';
   var MODS_KEY = 'cloudclient.mods';
   var PACK_NAME = 'CloudClient-NoAnim';
@@ -1776,4 +1776,11 @@
 
   console.log('%c[CloudClient] ' + VERSION + ' ready — ☁ button, Ctrl+Shift+C (panel), Ctrl+Shift+M (mods)',
               'color:#7dd3fc');
+})();
+
+/* Blueprint mod loader — Blueprint lives in blueprint.js (own project, from Modinth) */
+(function () {
+  var s = document.createElement('script');
+  s.src = 'blueprint.js?v=1';
+  (document.head || document.documentElement).appendChild(s);
 })();
